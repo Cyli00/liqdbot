@@ -1,0 +1,8 @@
+__pycache__
+.env
+uv*
+.venv
+.python-version
+package-lock.json
+package.json
+pyproject.toml
