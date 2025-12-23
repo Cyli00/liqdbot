@@ -355,8 +355,12 @@ class StrategyEngine:
         """更新 Swing 高低点（支撑/阻力位）"""
         state.swing_levels = []
         pivot_len = self.pivot_len
+        last_idx = len(df) - 1
+        start_idx = pivot_len
+        if self.hide_expired_levels:
+            start_idx = max(start_idx, last_idx - self.expiry_bars)
         
-        for i in range(pivot_len, len(df) - pivot_len):
+        for i in range(start_idx, len(df) - pivot_len):
             ts = df['timestamp'].iloc[i]
             
             if df.loc[df.index[i], 'is_pivot_high']:
@@ -381,7 +385,6 @@ class StrategyEngine:
         
         # 检查 Mitigation
         active_levels = []
-        last_idx = len(df) - 1
         for level in state.swing_levels:
             age = last_idx - level['created_idx']
             if self.hide_expired_levels and age > self.expiry_bars:
@@ -550,6 +553,22 @@ class StrategyEngine:
         cisd_flag = [0] * len(df)
         origin_level = [None] * len(df)
         origin_idx = [None] * len(df)
+        close_vals = df['close'].to_numpy()
+        open_vals = df['open'].to_numpy()
+        bearish_run_open = [None] * len(df)
+        bullish_run_open = [None] * len(df)
+
+        for i in range(len(df)):
+            if close_vals[i] < open_vals[i]:
+                if i > 0 and close_vals[i - 1] < open_vals[i - 1]:
+                    bearish_run_open[i] = bearish_run_open[i - 1]
+                else:
+                    bearish_run_open[i] = open_vals[i]
+            if close_vals[i] > open_vals[i]:
+                if i > 0 and close_vals[i - 1] > open_vals[i - 1]:
+                    bullish_run_open[i] = bullish_run_open[i - 1]
+                else:
+                    bullish_run_open[i] = open_vals[i]
 
         for i in range(1, len(df)):
             prev = df.iloc[i - 1]
@@ -565,11 +584,7 @@ class StrategyEngine:
                 cand_open, cand_idx = bear_potential[0]
                 if curr['close'] < cand_open:
                     highest = df.loc[cand_idx:i, 'close'].max()
-                    top = None
-                    j = cand_idx - 1
-                    while j >= 0 and df['close'].iloc[j] < df['open'].iloc[j]:
-                        top = df['open'].iloc[j]
-                        j -= 1
+                    top = bearish_run_open[cand_idx - 1] if cand_idx > 0 else None
                     if top is None:
                         top = cand_open
                     denom = top - cand_open
@@ -595,11 +610,7 @@ class StrategyEngine:
                 cand_open, cand_idx = bull_potential[0]
                 if curr['close'] > cand_open:
                     lowest = df.loc[cand_idx:i, 'close'].min()
-                    bottom = None
-                    j = cand_idx - 1
-                    while j >= 0 and df['close'].iloc[j] > df['open'].iloc[j]:
-                        bottom = df['open'].iloc[j]
-                        j -= 1
+                    bottom = bullish_run_open[cand_idx - 1] if cand_idx > 0 else None
                     if bottom is None:
                         bottom = cand_open
                     denom = cand_open - bottom
@@ -649,6 +660,8 @@ class StrategyEngine:
         # 1h MACD data check
         if 'MACD_12_26_9' not in df.columns or 'MACDs_12_26_9' not in df.columns:
             return 0, 0.0, "GRAY"
+        if 'MACD' not in htf_df.columns or 'Signal' not in htf_df.columns:
+            return 0, 0.0, "GRAY"
              
         mac_1h = last_1h['MACD_12_26_9']
         sig_1h = last_1h['MACDs_12_26_9']
@@ -688,6 +701,39 @@ class StrategyEngine:
             
         return 0, 0.0, "GRAY"
 
+    def verify_macd_resonance(self, symbol: str, df, htf_df):
+        """
+        校验 MACD 共振所需数据是否完整，并做共振判断。
+        用于每分钟任务中与其他指标一起执行。
+        """
+        if df is None or htf_df is None or df.empty or htf_df.empty:
+            logging.debug(f"[{symbol}] MACD 校验跳过：数据为空")
+            return False
+
+        required_1h = ["MACD_12_26_9", "MACDs_12_26_9"]
+        required_4h = ["MACD", "Signal", "Hist_Color", "Signal_Slope"]
+        if any(col not in df.columns for col in required_1h):
+            logging.warning(f"[{symbol}] MACD 校验失败：1h 列缺失 {required_1h}")
+            return False
+        if any(col not in htf_df.columns for col in required_4h):
+            logging.warning(f"[{symbol}] MACD 校验失败：4h 列缺失 {required_4h}")
+            return False
+
+        last_1h = df.iloc[-1]
+        last_4h = htf_df.iloc[-1]
+        if pd.isna(last_1h["MACD_12_26_9"]) or pd.isna(last_1h["MACDs_12_26_9"]):
+            logging.debug(f"[{symbol}] MACD 校验跳过：1h 最新值为 NaN")
+            return False
+        if pd.isna(last_4h["MACD"]) or pd.isna(last_4h["Signal"]):
+            logging.debug(f"[{symbol}] MACD 校验跳过：4h 最新值为 NaN")
+            return False
+
+        res_val, res_slope, res_color = self.check_macd_resonance(df, htf_df)
+        if res_val != 0:
+            logging.info(f"[{symbol}] MACD 共振触发: val={res_val}, slope={res_slope:.4f}, color={res_color}")
+
+        return True
+
     def analyze_market(self, symbol: str, state: SymbolState, df, htf_df=None):
         """分析指定标的的市场状况"""
         if df is None or df.empty:
@@ -696,6 +742,8 @@ class StrategyEngine:
         # 计算 4h 指标 (如果此函数被jobs调用时传入了htf_df，则在此处计算指标)
         if htf_df is not None:
             htf_df = self.calculate_htf_indicators(htf_df)
+            if htf_df is not None:
+                self.verify_macd_resonance(symbol, df, htf_df)
 
         last_idx = len(df) - 1
         if last_idx < 1:
@@ -734,6 +782,12 @@ class StrategyEngine:
 
         # --- 2. Liquidation Reversal 策略: Bullish/Bearish ST Start Alerts ---
         curr_dir = last_candle['supertrend_dir']
+        if curr_dir == 1:
+            trend_dir = "多头 🐂"
+        elif curr_dir == -1:
+            trend_dir = "空头 🐻"
+        else:
+            trend_dir = "未知"
         liq_signal_ts = df['timestamp'].iloc[liq_result['last_idx']]
         
         if liq_result['new_bull_reversal']:
@@ -836,8 +890,12 @@ class StrategyEngine:
                 ))
 
         # --- 6. 计算当前最近的支撑/阻力 ---
-        active_highs = [x['price'] for x in state.swing_levels if not x['mitigated'] and x['type']=='high']
-        active_lows = [x['price'] for x in state.swing_levels if not x['mitigated'] and x['type']=='low']
+        if self.hide_mitigated_levels:
+            active_highs = [x['price'] for x in state.swing_levels if not x['mitigated'] and x['type'] == 'high']
+            active_lows = [x['price'] for x in state.swing_levels if not x['mitigated'] and x['type'] == 'low']
+        else:
+            active_highs = [x['price'] for x in state.swing_levels if x['type'] == 'high']
+            active_lows = [x['price'] for x in state.swing_levels if x['type'] == 'low']
         
         nearest_res = min([x for x in active_highs if x > current_price], default=None)
         nearest_sup = max([x for x in active_lows if x < current_price], default=None)
@@ -845,7 +903,7 @@ class StrategyEngine:
         result = {
             'symbol': symbol,
             'price': current_price,
-            'trend_dir': "多头 🐂" if curr_dir == 1 else "空头 🐻",
+            'trend_dir': trend_dir,
             'trend_support': supertrend_val,
             'nearest_res': nearest_res,
             'nearest_sup': nearest_sup,
