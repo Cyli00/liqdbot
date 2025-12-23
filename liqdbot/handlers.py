@@ -196,7 +196,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if should_post_to_channel:
         try:
             await context.bot.send_message(chat_id=TG_CHAT_ID, text=final_msg, parse_mode='Markdown')
-            await loading_msg.edit_text(f"✅ 状态报告已推送到频道！")
+            await loading_msg.edit_text("✅ 状态报告已推送到频道！")
         except Exception as e:
             await loading_msg.edit_text(f"❌ 推送频道失败: {e}\n请检查Bot是否为频道管理员。")
     else:

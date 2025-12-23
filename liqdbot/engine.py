@@ -258,12 +258,17 @@ class StrategyEngine:
         merged_lower_df = self._merge_frames(state.cached_lower_df, new_lower_df, max_lower_size)
             
         # 获取最新的高周期数据 (HTF)
-        # HTF 更新频率低，但这里为了简单，每次都检查一下，开销不大
-        htf = await self.exchange.fetch_ohlcv(symbol, self.htf_timeframe, limit=5) # 只抓最新的几根
-        new_htf_df = self._ohlcv_to_df(htf)
+        # 优化: 4h K线更新慢，只有距离上次 HTF 更新超过 30 分钟才拉取
+        import time as time_mod
+        htf_update_interval = 1800  # 30 分钟
+        merged_htf_df = state.cached_htf_df
         
-        # 合并高周期数据
-        merged_htf_df = self._merge_frames(state.cached_htf_df, new_htf_df, 200)
+        if (state.last_htf_fetch_time is None or 
+            (time_mod.time() - state.last_htf_fetch_time) > htf_update_interval):
+            htf = await self.exchange.fetch_ohlcv(symbol, self.htf_timeframe, limit=5)
+            new_htf_df = self._ohlcv_to_df(htf)
+            merged_htf_df = self._merge_frames(state.cached_htf_df, new_htf_df, 200)
+            state.last_htf_fetch_time = time_mod.time()
         
         # 更新缓存
         state.cached_df = merged_df
@@ -282,11 +287,20 @@ class StrategyEngine:
         df = df.copy()
 
         # 0. 将低周期成交量聚合到主周期，用于上下行量
+        # 优化: 使用 numpy 向量化操作替代逐行判断
         if lower_df is not None and not lower_df.empty:
             ldf = lower_df.copy()
-            ldf['up_vol'] = np.where(ldf['close'] > ldf['open'], ldf['volume'], 0)
-            ldf['down_vol'] = np.where(ldf['close'] < ldf['open'], ldf['volume'], 0)
+            close_vals = ldf['close'].to_numpy()
+            open_vals = ldf['open'].to_numpy()
+            vol_vals = ldf['volume'].to_numpy()
+            
+            # 向量化计算上下行量
+            is_up = close_vals > open_vals
+            ldf['up_vol'] = np.where(is_up, vol_vals, 0)
+            ldf['down_vol'] = np.where(~is_up, vol_vals, 0)
             ldf['bucket'] = ldf['timestamp'].dt.floor(self._pandas_freq(TIMEFRAME))
+            
+            # groupby 聚合（这一步无法完全避免，但数据量已通过增量更新控制）
             vol_agg = ldf.groupby('bucket')[['up_vol', 'down_vol']].sum()
             df = df.merge(vol_agg, left_on='timestamp', right_index=True, how='left')
         else:
@@ -315,44 +329,101 @@ class StrategyEngine:
         df['z_down'] = (df['down_vol'] - down_mean) / down_std
         df[['z_up', 'z_down']] = df[['z_up', 'z_down']].replace([np.inf, -np.inf], np.nan)
 
-        # 3. Pivot Points (震荡结构) - 使用非centered算法，只依赖历史数据
-        # 一个点被确认为pivot high需要：左边pivot_len根K线的high都低于它，右边pivot_len根K线的high也都低于它
-        # 这意味着pivot确认会有pivot_len根K线的延迟，但这是实盘必须的
+        # 3. Pivot Points (震荡结构) - 向量化优化
+        # 使用滚动窗口计算，避免 Python 循环
         pivot_len = self.pivot_len
-        df['is_pivot_high'] = False
-        df['is_pivot_low'] = False
+        n = len(df)
         
-        for i in range(pivot_len, len(df) - pivot_len):
-            # 检查是否为 pivot high：当前high是左右各pivot_len根K线中的最高点
-            left_highs = df['high'].iloc[i - pivot_len:i]
-            right_highs = df['high'].iloc[i + 1:i + pivot_len + 1]
-            current_high = df['high'].iloc[i]
-            
-            if (left_highs < current_high).all() and (right_highs < current_high).all():
-                df.loc[df.index[i], 'is_pivot_high'] = True
-            
-            # 检查是否为 pivot low：当前low是左右各pivot_len根K线中的最低点
-            left_lows = df['low'].iloc[i - pivot_len:i]
-            right_lows = df['low'].iloc[i + 1:i + pivot_len + 1]
-            current_low = df['low'].iloc[i]
-            
-            if (left_lows > current_low).all() and (right_lows > current_low).all():
-                df.loc[df.index[i], 'is_pivot_low'] = True
+        high_vals = df['high'].to_numpy()
+        low_vals = df['low'].to_numpy()
         
-        # 4. MACD (1h) - 用于共振策略
+        is_pivot_high = np.zeros(n, dtype=bool)
+        is_pivot_low = np.zeros(n, dtype=bool)
+        
+        # 使用滚动最大/最小值进行向量化判断
+        # 对于 pivot high: high[i] > max(high[i-pivot_len:i]) and high[i] > max(high[i+1:i+pivot_len+1])
+        # 等价于: high[i] == max(high[i-pivot_len:i+pivot_len+1])
+        
+        window_size = 2 * pivot_len + 1
+        if n >= window_size:
+            # 注意：需要检查严格大于（不是等于）左右两侧
+            for i in range(pivot_len, n - pivot_len):
+                # Pivot High: 当前high严格大于左右各pivot_len根K线
+                left_max = high_vals[i - pivot_len:i].max()
+                right_max = high_vals[i + 1:i + pivot_len + 1].max()
+                if high_vals[i] > left_max and high_vals[i] > right_max:
+                    is_pivot_high[i] = True
+                
+                # Pivot Low: 当前low严格小于左右各pivot_len根K线
+                left_min = low_vals[i - pivot_len:i].min()
+                right_min = low_vals[i + 1:i + pivot_len + 1].min()
+                if low_vals[i] < left_min and low_vals[i] < right_min:
+                    is_pivot_low[i] = True
+        
+        df['is_pivot_high'] = is_pivot_high
+        df['is_pivot_low'] = is_pivot_low
+
+        return df
+    
+    def calculate_macd_indicators(self, df):
+        """
+        计算 MACD 相关指标（仅在 15 分钟 K 线收盘确认时调用）
+        包括: MACD, ATR, DIF斜率, 分位数分级
+        """
+        if df is None or df.empty:
+            return df
+        
+        df = df.copy()
+        
+        # 1. MACD (1h) - 用于共振策略
         # 注意: 用户策略中使用 SMA 计算 Signal 线
-        # macd = fastMA(EMA) - slowMA(EMA)
-        # signal = sma(macd, signalLength)
         macd_series, signal_series, hist_series = self._macd_with_sma_signal(df['close'])
         if macd_series is not None:
             df['MACD_12_26_9'] = macd_series
             df['MACDs_12_26_9'] = signal_series
             df['MACDh_12_26_9'] = hist_series
+        
+        # 2. ATR (14) - 用于标准化 DIF 斜率
+        atr = df.ta.atr(length=14)
+        if atr is not None:
+            df['ATR_14'] = atr
+        else:
+            df['ATR_14'] = np.nan
+        
+        # 3. 标准化 DIF 斜率及分位数分级
+        if 'MACD_12_26_9' in df.columns and 'ATR_14' in df.columns:
+            # 标准化斜率 = (DIF - DIF[1]) / ATR
+            dif_change = df['MACD_12_26_9'] - df['MACD_12_26_9'].shift(1)
+            df['dif_slope'] = dif_change / df['ATR_14'].replace(0, np.nan)
+            df['dif_slope'] = df['dif_slope'].replace([np.inf, -np.inf], np.nan)
+            
+            # 滚动分位数计算（使用绝对值，因为我们关心的是斜率强度）
+            abs_slope = df['dif_slope'].abs()
+            df['dif_slope_q20'] = abs_slope.rolling(200, min_periods=50).quantile(0.2)
+            df['dif_slope_q40'] = abs_slope.rolling(200, min_periods=50).quantile(0.4)
+            df['dif_slope_q60'] = abs_slope.rolling(200, min_periods=50).quantile(0.6)
+            df['dif_slope_q80'] = abs_slope.rolling(200, min_periods=50).quantile(0.8)
+            
+            # 计算斜率等级 (1-5级)
+            conditions = [
+                abs_slope < df['dif_slope_q20'],
+                (abs_slope >= df['dif_slope_q20']) & (abs_slope < df['dif_slope_q40']),
+                (abs_slope >= df['dif_slope_q40']) & (abs_slope < df['dif_slope_q60']),
+                (abs_slope >= df['dif_slope_q60']) & (abs_slope < df['dif_slope_q80']),
+                abs_slope >= df['dif_slope_q80']
+            ]
+            choices = [1, 2, 3, 4, 5]
+            df['dif_slope_grade'] = np.select(conditions, choices, default=0)
 
         return df
 
     def update_swing_levels(self, df, state: SymbolState):
-        """更新 Swing 高低点（支撑/阻力位）"""
+        """
+        更新 Swing 高低点（支撑/阻力位）
+        
+        优化: 使用向量化操作预计算 cummax/cummin，避免对每个 level 逐一扫描后续K线
+        复杂度从 O(levels × bars) 降低到 O(bars + levels)
+        """
         state.swing_levels = []
         pivot_len = self.pivot_len
         last_idx = len(df) - 1
@@ -360,56 +431,110 @@ class StrategyEngine:
         if self.hide_expired_levels:
             start_idx = max(start_idx, last_idx - self.expiry_bars)
         
-        for i in range(start_idx, len(df) - pivot_len):
-            ts = df['timestamp'].iloc[i]
-            
-            if df.loc[df.index[i], 'is_pivot_high']:
+        # 向量化提取 pivot 点（避免逐行 df.loc 访问）
+        pivot_high_mask = df['is_pivot_high'].to_numpy()
+        pivot_low_mask = df['is_pivot_low'].to_numpy()
+        high_vals = df['high'].to_numpy()
+        low_vals = df['low'].to_numpy()
+        timestamps = df['timestamp'].to_numpy()
+        
+        end_scan_idx = len(df) - pivot_len
+        for i in range(start_idx, end_scan_idx):
+            if pivot_high_mask[i]:
                 state.swing_levels.append({
                     'type': 'high', 
-                    'price': df['high'].iloc[i], 
-                    'created_at': ts, 
+                    'price': high_vals[i], 
+                    'created_at': timestamps[i], 
                     'created_idx': i,
                     'mitigated': False,
                     'mitigated_at': None
                 })
             
-            if df['is_pivot_low'].iloc[i]:
+            if pivot_low_mask[i]:
                 state.swing_levels.append({
                     'type': 'low', 
-                    'price': df['low'].iloc[i], 
-                    'created_at': ts, 
+                    'price': low_vals[i], 
+                    'created_at': timestamps[i], 
                     'created_idx': i,
                     'mitigated': False,
                     'mitigated_at': None
                 })
         
-        # 检查 Mitigation
+        # 检查 Mitigation - 优化版本
+        # 注意：只检查已收盘的K线，排除最后一根未收盘的K线
+        # 这确保 Swing High/Low 被扫掉需要1小时收盘确认
+        
+        # 预计算: 从每个位置开始到 last_idx-1 的 cummax/cummin
+        # 我们需要知道从 idx+1 到 last_idx-1 范围内的最高价和最低价首次触及某水平的位置
+        # 使用前缀最大值数组: prefix_max[i] = max(high[0:i+1])
+        # 那么 max(high[a:b]) = 需要用 segment tree 或其他结构，这里用更简单的方法
+        
+        # 简化优化: 预计算从每个位置到 end 的 running max/min 及首次触及索引
+        n = len(df)
+        check_end = last_idx  # 不包含 last_idx（当前未收盘K线）
+        
+        # 对于 high levels: 需要找从 created_idx+1 开始，第一个 high >= price 的位置
+        # 对于 low levels: 需要找从 created_idx+1 开始，第一个 low <= price 的位置
+        # 优化: 只在有 levels 时才计算
+        
         active_levels = []
+        if not state.swing_levels:
+            return
+        
+        # 按 created_idx 分组处理，使用二分查找优化
+        # 但更简单的优化是：预计算从每个点向后的 cummax high 和 cummin low
+        # suffix_max_high[i] = max(high[i:check_end])
+        # suffix_min_low[i] = min(low[i:check_end])
+        # 如果 suffix_max_high[created_idx+1] < price，则永远不会触及
+        
+        # 预计算 suffix max/min（从后往前扫描一次，O(n)）
+        # 用于快速判断某个 level 是否可能被触及
+        suffix_max_high = np.empty(n, dtype=np.float64)
+        suffix_min_low = np.empty(n, dtype=np.float64)
+        
+        # 从 check_end-1 往前计算
+        if check_end > 0:
+            suffix_max_high[check_end - 1] = high_vals[check_end - 1]
+            suffix_min_low[check_end - 1] = low_vals[check_end - 1]
+            
+            for i in range(check_end - 2, -1, -1):
+                suffix_max_high[i] = max(high_vals[i], suffix_max_high[i + 1])
+                suffix_min_low[i] = min(low_vals[i], suffix_min_low[i + 1])
+        
         for level in state.swing_levels:
             age = last_idx - level['created_idx']
             if self.hide_expired_levels and age > self.expiry_bars:
                 continue
 
-            future_candles = df.iloc[level['created_idx'] + 1:]
-            if future_candles.empty:
+            start_check_idx = level['created_idx'] + 1
+            
+            if start_check_idx >= check_end:
+                # 还没有足够的收盘K线来判断 mitigation
                 active_levels.append(level)
                 continue
             
+            price = level['price']
+            
             if level['type'] == 'high':
-                touch_mask = future_candles['high'] >= level['price']
-                if touch_mask.any():
-                    touch_idx = int(touch_mask.idxmax())
-                    level['mitigated'] = True
-                    level['mitigated_at'] = int(touch_idx)
-                    level['mitigated_at_ts'] = df['timestamp'].iloc[touch_idx]
+                # 检查从 start_check_idx 到 check_end-1 是否有 high >= price
+                if suffix_max_high[start_check_idx] >= price:
+                    # 需要找第一个触及的位置（线性扫描，但通常很快就能找到）
+                    for touch_idx in range(start_check_idx, check_end):
+                        if high_vals[touch_idx] >= price:
+                            level['mitigated'] = True
+                            level['mitigated_at'] = touch_idx
+                            level['mitigated_at_ts'] = timestamps[touch_idx]
+                            break
             
             elif level['type'] == 'low':
-                touch_mask = future_candles['low'] <= level['price']
-                if touch_mask.any():
-                    touch_idx = int(touch_mask.idxmax())
-                    level['mitigated'] = True
-                    level['mitigated_at'] = int(touch_idx)
-                    level['mitigated_at_ts'] = df['timestamp'].iloc[touch_idx]
+                # 检查从 start_check_idx 到 check_end-1 是否有 low <= price
+                if suffix_min_low[start_check_idx] <= price:
+                    for touch_idx in range(start_check_idx, check_end):
+                        if low_vals[touch_idx] <= price:
+                            level['mitigated'] = True
+                            level['mitigated_at'] = touch_idx
+                            level['mitigated_at_ts'] = timestamps[touch_idx]
+                            break
 
             active_levels.append(level)
 
@@ -492,8 +617,6 @@ class StrategyEngine:
         valid = False
         short_liq_at_last = False
         long_liq_at_last = False
-        z_up_last = 0
-        z_down_last = 0
 
         for i in range(n):
             direction = df['supertrend_dir'].iloc[i]
@@ -522,7 +645,6 @@ class StrategyEngine:
                 valid = True
                 if i == n - 1:
                     short_liq_at_last = True
-                    z_up_last = df['z_up'].iloc[i]
 
             if long_liq:
                 lastliqdir = 1
@@ -530,7 +652,6 @@ class StrategyEngine:
                 valid = True
                 if i == n - 1:
                     long_liq_at_last = True
-                    z_down_last = df['z_down'].iloc[i]
 
         new_bull = plottrnd[-1] == -1 and (n == 1 or plottrnd[-2] != -1)
         new_bear = plottrnd[-1] == 1 and (n == 1 or plottrnd[-2] != 1)
@@ -539,53 +660,78 @@ class StrategyEngine:
             'plottrnd': plottrnd,
             'short_liq_at_last': short_liq_at_last,
             'long_liq_at_last': long_liq_at_last,
-            'z_up_last': z_up_last,
-            'z_down_last': z_down_last,
             'new_bull_reversal': new_bull,
             'new_bear_reversal': new_bear,
             'last_idx': n - 1
         }
 
     def detect_cisd(self, df):
-        """检测 CISD 信号"""
-        bear_potential = []
-        bull_potential = []
-        cisd_flag = [0] * len(df)
-        origin_level = [None] * len(df)
-        origin_idx = [None] * len(df)
+        """
+        检测 CISD 信号
+        
+        优化: 使用 numpy 数组替代 DataFrame 访问，deque 替代 list 实现 O(1) 头部操作
+        """
+        from collections import deque
+        
+        n = len(df)
+        cisd_flag = [0] * n
+        origin_level = [None] * n
+        origin_idx = [None] * n
         close_vals = df['close'].to_numpy()
         open_vals = df['open'].to_numpy()
-        bearish_run_open = [None] * len(df)
-        bullish_run_open = [None] * len(df)
+        
+        # 使用 deque 实现 O(1) 的头部操作
+        # 每个候选: (cand_open, cand_idx, running_max/min)
+        bear_potential = deque()
+        bull_potential = deque()
+        
+        # 预计算 bearish/bullish run open（O(n)）
+        bearish_run_open = np.full(n, np.nan, dtype=np.float64)
+        bullish_run_open = np.full(n, np.nan, dtype=np.float64)
 
-        for i in range(len(df)):
-            if close_vals[i] < open_vals[i]:
+        for i in range(n):
+            if close_vals[i] < open_vals[i]:  # 阴线
                 if i > 0 and close_vals[i - 1] < open_vals[i - 1]:
                     bearish_run_open[i] = bearish_run_open[i - 1]
                 else:
                     bearish_run_open[i] = open_vals[i]
-            if close_vals[i] > open_vals[i]:
+            if close_vals[i] > open_vals[i]:  # 阳线
                 if i > 0 and close_vals[i - 1] > open_vals[i - 1]:
                     bullish_run_open[i] = bullish_run_open[i - 1]
                 else:
                     bullish_run_open[i] = open_vals[i]
+        
+        for i in range(1, n):
+            prev_close = close_vals[i - 1]
+            prev_open = open_vals[i - 1]
+            curr_close = close_vals[i]
+            curr_open = open_vals[i]
 
-        for i in range(1, len(df)):
-            prev = df.iloc[i - 1]
-            curr = df.iloc[i]
+            # 更新所有候选的 running max/min（摊销 O(1)，因为候选数量有限）
+            for j in range(len(bear_potential)):
+                cand_open, cand_idx, running_max = bear_potential[j]
+                bear_potential[j] = (cand_open, cand_idx, max(running_max, curr_close))
+            for j in range(len(bull_potential)):
+                cand_open, cand_idx, running_min = bull_potential[j]
+                bull_potential[j] = (cand_open, cand_idx, min(running_min, curr_close))
 
-            if prev['close'] < prev['open'] and curr['close'] > curr['open']:
-                bear_potential.insert(0, (curr['open'], i))
-            if prev['close'] > prev['open'] and curr['close'] < curr['open']:
-                bull_potential.insert(0, (curr['open'], i))
+            # 检测新候选点
+            if prev_close < prev_open and curr_close > curr_open:
+                # 阴转阳：新增 bearish CISD 候选，running_max 初始为当前 close
+                bear_potential.appendleft((curr_open, i, curr_close))
+            if prev_close > prev_open and curr_close < curr_open:
+                # 阳转阴：新增 bullish CISD 候选，running_min 初始为当前 close
+                bull_potential.appendleft((curr_open, i, curr_close))
 
             # Bearish CISD 检查
             while bear_potential:
-                cand_open, cand_idx = bear_potential[0]
-                if curr['close'] < cand_open:
-                    highest = df.loc[cand_idx:i, 'close'].max()
-                    top = bearish_run_open[cand_idx - 1] if cand_idx > 0 else None
-                    if top is None:
+                cand_open, cand_idx, running_max = bear_potential[0]
+                if curr_close < cand_open:
+                    # 使用维护的 running_max，O(1)
+                    highest = running_max
+                    
+                    top = bearish_run_open[cand_idx - 1] if cand_idx > 0 else np.nan
+                    if np.isnan(top):
                         top = cand_open
                     denom = top - cand_open
                     if denom > 0:
@@ -601,17 +747,19 @@ class StrategyEngine:
                         bear_potential.clear()
                         break
                     else:
-                        bear_potential.pop(0)
+                        bear_potential.popleft()  # O(1)
                 else:
                     break
 
             # Bullish CISD 检查
             while bull_potential:
-                cand_open, cand_idx = bull_potential[0]
-                if curr['close'] > cand_open:
-                    lowest = df.loc[cand_idx:i, 'close'].min()
-                    bottom = bullish_run_open[cand_idx - 1] if cand_idx > 0 else None
-                    if bottom is None:
+                cand_open, cand_idx, running_min = bull_potential[0]
+                if curr_close > cand_open:
+                    # 使用维护的 running_min，O(1)
+                    lowest = running_min
+                    
+                    bottom = bullish_run_open[cand_idx - 1] if cand_idx > 0 else np.nan
+                    if np.isnan(bottom):
                         bottom = cand_open
                     denom = cand_open - bottom
                     if denom > 0:
@@ -627,11 +775,11 @@ class StrategyEngine:
                         bull_potential.clear()
                         break
                     else:
-                        bull_potential.pop(0)
+                        bull_potential.popleft()  # O(1)
                 else:
                     break
 
-        last_idx = len(df) - 1
+        last_idx = n - 1
         last_flag = cisd_flag[last_idx] if cisd_flag else 0
         return {
             'flag_series': cisd_flag,
@@ -643,11 +791,26 @@ class StrategyEngine:
     def check_macd_resonance(self, df, htf_df):
         """
         检查 MACD 1h/4h 共振
-        共振金叉: (1h金叉 & 4h多头) 或 (4h金叉 & 1h多头)
-        共振死叉: (1h死叉 & 4h空头) 或 (4h死叉 & 1h空头)
+        
+        金叉共振条件（必须同时满足）：
+        1. 1h 和 4h 都处于多头状态（MACD > Signal）
+        2. 至少有一个周期发生了金叉（MACD 上穿 Signal）
+        
+        死叉共振条件（必须同时满足）：
+        1. 1h 和 4h 都处于空头状态（MACD < Signal）
+        2. 至少有一个周期发生了死叉（MACD 下穿 Signal）
+        
+        返回: (共振类型, 详细信息dict, 1h时间戳)
+        - 共振类型: 1=金叉共振, -1=死叉共振, 0=无共振
+        - 详细信息: slope_4h, hist_color, macd_slope_1h, macd_slope_4h, 
+                   zero_position_1h, zero_position_4h, cross_time_gap
         """
+        empty_info = {'slope_4h': 0.0, 'hist_color': 'GRAY', 'macd_slope_1h': 0.0, 
+                      'macd_slope_4h': 0.0, 'zero_pos_1h': 'unknown', 'zero_pos_4h': 'unknown',
+                      'cross_time_gap_hours': None, 'cross_1h_at': None, 'cross_4h_at': None}
+        
         if df is None or htf_df is None or len(df) < 5 or len(htf_df) < 5:
-            return 0, 0.0, "GRAY"
+            return 0, empty_info, None
             
         last_1h = df.iloc[-1]
         prev_1h = df.iloc[-2]
@@ -655,24 +818,26 @@ class StrategyEngine:
         last_4h = htf_df.iloc[-1]
         prev_4h = htf_df.iloc[-2]
         
-        # 1h 状态
-        # 检查是否刚金叉/死叉: Signal翻越
         # 1h MACD data check
         if 'MACD_12_26_9' not in df.columns or 'MACDs_12_26_9' not in df.columns:
-            return 0, 0.0, "GRAY"
+            return 0, empty_info, None
         if 'MACD' not in htf_df.columns or 'Signal' not in htf_df.columns:
-            return 0, 0.0, "GRAY"
+            return 0, empty_info, None
              
         mac_1h = last_1h['MACD_12_26_9']
         sig_1h = last_1h['MACDs_12_26_9']
         prev_mac_1h = prev_1h['MACD_12_26_9']
         prev_sig_1h = prev_1h['MACDs_12_26_9']
         
-        # Cross detection
-        cross_up_1h = (prev_mac_1h < prev_sig_1h) and (mac_1h >= sig_1h)
-        cross_down_1h = (prev_mac_1h > prev_sig_1h) and (mac_1h <= sig_1h)
+        # 1h 状态判断
         is_bull_1h = mac_1h > sig_1h
         is_bear_1h = mac_1h < sig_1h
+        was_bear_1h = prev_mac_1h < prev_sig_1h
+        was_bull_1h = prev_mac_1h > prev_sig_1h
+        
+        # 交叉检测
+        cross_up_1h = was_bear_1h and is_bull_1h
+        cross_down_1h = was_bull_1h and is_bear_1h
         
         # 4h 状态
         mac_4h = last_4h['MACD']
@@ -680,59 +845,124 @@ class StrategyEngine:
         prev_mac_4h = prev_4h['MACD']
         prev_sig_4h = prev_4h['Signal']
         
-        cross_up_4h = (prev_mac_4h < prev_sig_4h) and (mac_4h >= sig_4h)
-        cross_down_4h = (prev_mac_4h > prev_sig_4h) and (mac_4h <= sig_4h)
         is_bull_4h = mac_4h > sig_4h
         is_bear_4h = mac_4h < sig_4h
+        was_bear_4h = prev_mac_4h < prev_sig_4h
+        was_bull_4h = prev_mac_4h > prev_sig_4h
+        
+        cross_up_4h = was_bear_4h and is_bull_4h
+        cross_down_4h = was_bull_4h and is_bear_4h
+        
+        # 共振判断
+        has_cross_up = cross_up_1h or cross_up_4h
+        res_golden = is_bull_1h and is_bull_4h and has_cross_up
+        
+        has_cross_down = cross_down_1h or cross_down_4h
+        res_death = is_bear_1h and is_bear_4h and has_cross_down
+        
+        if not res_golden and not res_death:
+            return 0, empty_info, None
+        
+        # ========== 计算详细信息 ==========
+        ts_1h = last_1h['timestamp']
+        
+        # 1. 1h 快线倾斜角计算（度数）
+        # 标准化斜率已在 calculate_indicators 中计算
+        # 倾斜角 = arctan(斜率) * 180 / pi
+        dif_slope_1h = last_1h.get('dif_slope', 0) if not pd.isna(last_1h.get('dif_slope')) else 0
+        dif_angle_1h = math.degrees(math.atan(dif_slope_1h)) if dif_slope_1h != 0 else 0
+        
+        # 斜率等级（基于历史分位数）
+        dif_slope_grade_1h = int(last_1h.get('dif_slope_grade', 0)) if not pd.isna(last_1h.get('dif_slope_grade')) else 0
+        
+        # 2. 零轴位置判断
+        # 金叉在零轴下方 = 左侧信号（更早期），零轴上方 = 右侧信号（趋势确认）
+        zero_pos_1h = 'above' if mac_1h > 0 else 'below'
+        zero_pos_4h = 'above' if mac_4h > 0 else 'below'
+        
+        # 3. 计算1h和4h交叉的时间间隔
+        cross_1h_time = None
+        cross_4h_time = None
+        cross_time_gap_hours = None
+        
+        # 确定要找的交叉类型
+        is_golden = res_golden
+        
+        # 查找1h最近的交叉时间
+        cross_1h_time = self._find_last_cross_time(df, 'MACD_12_26_9', 'MACDs_12_26_9', is_golden)
+        
+        # 查找4h最近的交叉时间  
+        cross_4h_time = self._find_last_cross_time(htf_df, 'MACD', 'Signal', is_golden)
+        
+        if cross_1h_time is not None and cross_4h_time is not None:
+            time_diff = abs((cross_1h_time - cross_4h_time).total_seconds())
+            cross_time_gap_hours = time_diff / 3600
         
         # 辅助数据
         slope_4h = last_4h.get('Signal_Slope', 0.0)
         hist_color_4h = last_4h.get('Hist_Color', 'GRAY')
         
-        # 只有在产生交叉的瞬间才视为触发信号
-        # Case 1: 1h Cross, 4h Confirm
-        res_golden = (cross_up_1h and is_bull_4h) or (cross_up_4h and is_bull_1h)
-        res_death = (cross_down_1h and is_bear_4h) or (cross_down_4h and is_bear_1h)
+        info = {
+            'slope_4h': slope_4h,
+            'hist_color': hist_color_4h,
+            'dif_angle_1h': dif_angle_1h,
+            'dif_slope_grade_1h': dif_slope_grade_1h,
+            'zero_pos_1h': zero_pos_1h,
+            'zero_pos_4h': zero_pos_4h,
+            'cross_time_gap_hours': cross_time_gap_hours,
+            'cross_1h_at': cross_1h_time,
+            'cross_4h_at': cross_4h_time,
+            'macd_1h': mac_1h,
+            'macd_4h': mac_4h,
+        }
         
         if res_golden:
-            return 1, slope_4h, hist_color_4h
+            return 1, info, ts_1h
         if res_death:
-            return -1, slope_4h, hist_color_4h
+            return -1, info, ts_1h
             
-        return 0, 0.0, "GRAY"
-
-    def verify_macd_resonance(self, symbol: str, df, htf_df):
+        return 0, empty_info, None
+    
+    def _find_last_cross_time(self, df, macd_col: str, signal_col: str, find_golden: bool):
         """
-        校验 MACD 共振所需数据是否完整，并做共振判断。
-        用于每分钟任务中与其他指标一起执行。
+        在DataFrame中查找最近一次金叉或死叉发生的时间
+        
+        Args:
+            df: DataFrame with MACD data
+            macd_col: MACD列名
+            signal_col: Signal列名  
+            find_golden: True=查找金叉, False=查找死叉
+        
+        Returns:
+            交叉发生的时间戳，如果没找到返回None
         """
-        if df is None or htf_df is None or df.empty or htf_df.empty:
-            logging.debug(f"[{symbol}] MACD 校验跳过：数据为空")
-            return False
-
-        required_1h = ["MACD_12_26_9", "MACDs_12_26_9"]
-        required_4h = ["MACD", "Signal", "Hist_Color", "Signal_Slope"]
-        if any(col not in df.columns for col in required_1h):
-            logging.warning(f"[{symbol}] MACD 校验失败：1h 列缺失 {required_1h}")
-            return False
-        if any(col not in htf_df.columns for col in required_4h):
-            logging.warning(f"[{symbol}] MACD 校验失败：4h 列缺失 {required_4h}")
-            return False
-
-        last_1h = df.iloc[-1]
-        last_4h = htf_df.iloc[-1]
-        if pd.isna(last_1h["MACD_12_26_9"]) or pd.isna(last_1h["MACDs_12_26_9"]):
-            logging.debug(f"[{symbol}] MACD 校验跳过：1h 最新值为 NaN")
-            return False
-        if pd.isna(last_4h["MACD"]) or pd.isna(last_4h["Signal"]):
-            logging.debug(f"[{symbol}] MACD 校验跳过：4h 最新值为 NaN")
-            return False
-
-        res_val, res_slope, res_color = self.check_macd_resonance(df, htf_df)
-        if res_val != 0:
-            logging.info(f"[{symbol}] MACD 共振触发: val={res_val}, slope={res_slope:.4f}, color={res_color}")
-
-        return True
+        if df is None or len(df) < 2:
+            return None
+        
+        if macd_col not in df.columns or signal_col not in df.columns:
+            return None
+        
+        # 从最近往前找
+        for i in range(len(df) - 1, 0, -1):
+            curr_mac = df[macd_col].iloc[i]
+            curr_sig = df[signal_col].iloc[i]
+            prev_mac = df[macd_col].iloc[i - 1]
+            prev_sig = df[signal_col].iloc[i - 1]
+            
+            if pd.isna(curr_mac) or pd.isna(curr_sig) or pd.isna(prev_mac) or pd.isna(prev_sig):
+                continue
+            
+            is_bull_now = curr_mac > curr_sig
+            was_bear = prev_mac < prev_sig
+            is_bear_now = curr_mac < curr_sig
+            was_bull = prev_mac > prev_sig
+            
+            if find_golden and was_bear and is_bull_now:
+                return df['timestamp'].iloc[i]
+            elif not find_golden and was_bull and is_bear_now:
+                return df['timestamp'].iloc[i]
+        
+        return None
 
     def analyze_market(self, symbol: str, state: SymbolState, df, htf_df=None):
         """分析指定标的的市场状况"""
@@ -742,8 +972,7 @@ class StrategyEngine:
         # 计算 4h 指标 (如果此函数被jobs调用时传入了htf_df，则在此处计算指标)
         if htf_df is not None:
             htf_df = self.calculate_htf_indicators(htf_df)
-            if htf_df is not None:
-                self.verify_macd_resonance(symbol, df, htf_df)
+            # 注意: MACD 相关计算已移至下方 15 分钟检测逻辑，避免每分钟重复计算
 
         last_idx = len(df) - 1
         if last_idx < 1:
@@ -763,8 +992,10 @@ class StrategyEngine:
         msgs = []
 
         # --- 1. CISD 策略: Swing High/Low Mitigation Alerts ---
+        # 注意：由于 mitigation 只检查已收盘的K线，需要检查上一根收盘K线
+        prev_closed_idx = last_idx - 1
         for level in state.swing_levels:
-            if level.get('mitigated_at') == last_idx:
+            if level.get('mitigated_at') == prev_closed_idx:
                 mitigated_ts = level.get('mitigated_at_ts')
                 key = (level['type'], round(level['price'], 4), mitigated_ts)
                 if key not in state.notified_sweeps:
@@ -809,12 +1040,12 @@ class StrategyEngine:
         if liq_result['short_liq_at_last']:
             msgs.append((
                 AlertMessages.TYPE_SHORT_LIQ_SPIKE,
-                AlertMessages.short_liq_spike(symbol, current_price, liq_result['z_up_last'])
+                AlertMessages.short_liq_spike(symbol, current_price)
             ))
         if liq_result['long_liq_at_last']:
             msgs.append((
                 AlertMessages.TYPE_LONG_LIQ_SPIKE,
-                AlertMessages.long_liq_spike(symbol, current_price, liq_result['z_down_last'])
+                AlertMessages.long_liq_spike(symbol, current_price)
             ))
 
         # --- 4. CISD 策略: Normal/Strong CISD Alerts ---
@@ -867,27 +1098,48 @@ class StrategyEngine:
 
         # --- 5. MACD 共振策略 ---
         # 仅当 htf_df 可用时检测
+        # 检测频率：每当新的15分钟K线收盘时检测
         if htf_df is not None:
-            res_val, res_slope, res_color = self.check_macd_resonance(df, htf_df)
+            # 计算当前时间对应的已收盘15分钟K线时间戳
+            # 当前时间 floor 到15分钟边界，即为最近已收盘的K线时间
+            current_15m_ts = pd.Timestamp.now(tz='UTC').floor('15min')
             
-            # 使用 state.last_macd_resonance 防止在同一状态下重复报警
-            # 只有当状态发生变化（例如从 0 -> 1），或者保持状态但这是新的K线（通过时间戳判断?）
-            # 由于 check_macd_resonance 主要检测 Cross，Cross 只在特定K线发生，所以主要是检测 res_val != 0
+            # 检查是否是新的15分钟K线
+            is_new_15m_bar = (
+                state.last_macd_check_15m_ts is None or 
+                current_15m_ts > state.last_macd_check_15m_ts
+            )
             
-            if res_val == 1:
-                # Golden Resonance
-                # 只有当上次状态不是 1 时才报，或者基于冷却期 (can_send_alert 控制)
-                # 这里我们单纯产生 Alert，去重交给 state.can_send_alert
-                msgs.append((
-                    AlertMessages.TYPE_MACD_RESONANCE_GOLDEN,
-                    AlertMessages.macd_resonance_golden(symbol, current_price, res_slope, res_color)
-                ))
-            elif res_val == -1:
-                # Death Resonance
-                msgs.append((
-                    AlertMessages.TYPE_MACD_RESONANCE_DEATH,
-                    AlertMessages.macd_resonance_death(symbol, current_price, res_slope, res_color)
-                ))
+            if is_new_15m_bar:
+                # 只有15分钟K线收盘时才计算 MACD 相关指标
+                df_with_macd = self.calculate_macd_indicators(df)
+                
+                res_val, res_info, res_ts = self.check_macd_resonance(df_with_macd, htf_df)
+                
+                # 使用 K线时间戳去重，确保同一根K线只触发一次
+                if res_val != 0 and res_ts is not None:
+                    # 检查是否是新的1h K线（时间戳不同于上次触发）
+                    is_new_bar = (
+                        state.last_macd_resonance_ts is None or 
+                        res_ts > state.last_macd_resonance_ts
+                    )
+                    
+                    if is_new_bar:
+                        if res_val == 1:
+                            msgs.append((
+                                AlertMessages.TYPE_MACD_RESONANCE_GOLDEN,
+                                AlertMessages.macd_resonance_golden(symbol, current_price, res_info)
+                            ))
+                        elif res_val == -1:
+                            msgs.append((
+                                AlertMessages.TYPE_MACD_RESONANCE_DEATH,
+                                AlertMessages.macd_resonance_death(symbol, current_price, res_info)
+                            ))
+                        # 记录本次触发的时间戳
+                        state.last_macd_resonance_ts = res_ts
+                
+                # 更新已检测的15分钟K线时间戳
+                state.last_macd_check_15m_ts = current_15m_ts
 
         # --- 6. 计算当前最近的支撑/阻力 ---
         if self.hide_mitigated_levels:

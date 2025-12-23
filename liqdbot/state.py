@@ -95,4 +95,7 @@ class SymbolState:
         self.cached_lower_df = None
         self.cached_htf_df = None
         self.last_fetch_time = 0
+        self.last_htf_fetch_time = None  # HTF 数据上次拉取时间（优化：4h数据不需要每分钟拉取）
         self.last_macd_resonance = 0
+        self.last_macd_resonance_ts = None  # 上次MACD共振触发的K线时间戳
+        self.last_macd_check_15m_ts = None  # 上次MACD检测时的15分钟K线时间戳

@@ -131,10 +131,48 @@ class AlertMessages:
     # ==================== MACD 共振策略 ====================
     TYPE_MACD_RESONANCE_GOLDEN = "macd_resonance_golden"
     TYPE_MACD_RESONANCE_DEATH = "macd_resonance_death"
+    
+    @staticmethod
+    def _get_slope_grade_desc(grade: int) -> str:
+        """
+        根据分位数等级返回描述
+        1级: < q20 (很弱)
+        2级: q20-q40 (较弱)
+        3级: q40-q60 (中等)
+        4级: q60-q80 (较强)
+        5级: > q80 (很强)
+        """
+        grade_map = {
+            1: "⚪ 一级（很弱）",
+            2: "🟡 二级（较弱）",
+            3: "🟠 三级（中等）",
+            4: "🟢 四级（较强）",
+            5: "⚡ 五级（很强）",
+        }
+        return grade_map.get(grade, "❓ 未知")
+    
+    @staticmethod
+    def _get_zero_position_desc(zero_pos: str, is_golden: bool) -> str:
+        """
+        根据零轴位置返回信号类型描述
+        金叉：零轴下方=左侧做多信号，零轴上方=右侧做多信号
+        死叉：零轴上方=左侧做空信号，零轴下方=右侧做空信号
+        """
+        if is_golden:
+            if zero_pos == 'below':
+                return "🔵 左侧信号（零轴下方金叉，底部反转）"
+            else:
+                return "🟢 右侧信号（零轴上方金叉，趋势延续）"
+        else:
+            if zero_pos == 'above':
+                return "🔴 左侧信号（零轴上方死叉，顶部反转）"
+            else:
+                return "🟠 右侧信号（零轴下方死叉，趋势延续）"
 
     @staticmethod
-    def macd_resonance_golden(symbol: str, price: float, slope: float, hist_state: str) -> str:
+    def macd_resonance_golden(symbol: str, price: float, info: dict) -> str:
         """MACD Resonance Golden Cross"""
+        hist_state = info.get('hist_color', 'GRAY')
         emoji_map = {
             "AQUA": "🟢 动能强劲 (Aqua)",
             "BLUE": "⚪️ 动能减弱 (Blue)",
@@ -142,20 +180,56 @@ class AlertMessages:
             "MAROON": "🟡 动能反向减弱 (Maroon)"
         }
         state_str = emoji_map.get(hist_state, hist_state)
-        slope_emoji = "📈" if slope > 0 else "📉"
+        
+        # 1h 快线倾斜角和分级
+        dif_angle_1h = info.get('dif_angle_1h', 0)
+        dif_slope_grade_1h = info.get('dif_slope_grade_1h', 0)
+        grade_desc_1h = AlertMessages._get_slope_grade_desc(dif_slope_grade_1h)
+        angle_emoji = "📈" if dif_angle_1h > 0 else "📉"
+        
+        # 零轴位置
+        zero_pos_1h = info.get('zero_pos_1h', 'unknown')
+        zero_pos_4h = info.get('zero_pos_4h', 'unknown')
+        pos_desc_1h = AlertMessages._get_zero_position_desc(zero_pos_1h, True)
+        pos_desc_4h = AlertMessages._get_zero_position_desc(zero_pos_4h, True)
+        
+        # 时间间隔
+        time_gap = info.get('cross_time_gap_hours')
+        if time_gap is not None:
+            if time_gap < 1:
+                time_gap_str = f"{int(time_gap * 60)} 分钟"
+            else:
+                time_gap_str = f"{time_gap:.1f} 小时"
+        else:
+            time_gap_str = "未知"
+        
+        # 4h Signal 斜率
+        slope_4h = info.get('slope_4h', 0.0)
+        slope_emoji = "📈" if slope_4h > 0 else "📉"
         
         return (
             f"🚀 **MACD 1h/4h 共振金叉**\n"
             f"📍 标的: `{symbol}`\n"
             f"💰 当前价: `{price:.2f}`\n"
-            f"{slope_emoji} 4h Signal斜率: `{slope:+.4f}`\n"
-            f"📊 4h 动能: {state_str}\n"
+            f"\n"
+            f"**📊 1h 周期:**\n"
+            f"  • 快线倾斜角: {angle_emoji} `{dif_angle_1h:+.2f}°`\n"
+            f"  • 动量强度: {grade_desc_1h}\n"
+            f"  • 位置: {pos_desc_1h}\n"
+            f"\n"
+            f"**📊 4h 周期:**\n"
+            f"  • 位置: {pos_desc_4h}\n"
+            f"  • 动能: {state_str}\n"
+            f"{slope_emoji} Signal斜率: `{slope_4h:+.6f}`\n"
+            f"\n"
+            f"⏱ **交叉时间间隔:** {time_gap_str}\n"
             f"📝 说明: 1h 与 4h 周期趋势多头共振"
         )
 
     @staticmethod
-    def macd_resonance_death(symbol: str, price: float, slope: float, hist_state: str) -> str:
+    def macd_resonance_death(symbol: str, price: float, info: dict) -> str:
         """MACD Resonance Death Cross"""
+        hist_state = info.get('hist_color', 'GRAY')
         emoji_map = {
             "AQUA": "🟢 动能反向强劲 (Aqua)",
             "BLUE": "⚪️ 动能反向减弱 (Blue)",
@@ -163,13 +237,48 @@ class AlertMessages:
             "MAROON": "🟡 动能减弱 (Maroon)"
         }
         state_str = emoji_map.get(hist_state, hist_state)
-        slope_emoji = "📈" if slope > 0 else "📉"
+        
+        # 1h 快线倾斜角和分级
+        dif_angle_1h = info.get('dif_angle_1h', 0)
+        dif_slope_grade_1h = info.get('dif_slope_grade_1h', 0)
+        grade_desc_1h = AlertMessages._get_slope_grade_desc(dif_slope_grade_1h)
+        angle_emoji = "📈" if dif_angle_1h > 0 else "📉"
+        
+        # 零轴位置
+        zero_pos_1h = info.get('zero_pos_1h', 'unknown')
+        zero_pos_4h = info.get('zero_pos_4h', 'unknown')
+        pos_desc_1h = AlertMessages._get_zero_position_desc(zero_pos_1h, False)
+        pos_desc_4h = AlertMessages._get_zero_position_desc(zero_pos_4h, False)
+        
+        # 时间间隔
+        time_gap = info.get('cross_time_gap_hours')
+        if time_gap is not None:
+            if time_gap < 1:
+                time_gap_str = f"{int(time_gap * 60)} 分钟"
+            else:
+                time_gap_str = f"{time_gap:.1f} 小时"
+        else:
+            time_gap_str = "未知"
+        
+        # 4h Signal 斜率
+        slope_4h = info.get('slope_4h', 0.0)
+        slope_emoji = "📈" if slope_4h > 0 else "📉"
         
         return (
             f"📉 **MACD 1h/4h 共振死叉**\n"
             f"📍 标的: `{symbol}`\n"
             f"💰 当前价: `{price:.2f}`\n"
-            f"{slope_emoji} 4h Signal斜率: `{slope:+.4f}`\n"
-            f"📊 4h 动能: {state_str}\n"
+            f"\n"
+            f"**📊 1h 周期:**\n"
+            f"  • 快线倾斜角: {angle_emoji} `{dif_angle_1h:+.2f}°`\n"
+            f"  • 动量强度: {grade_desc_1h}\n"
+            f"  • 位置: {pos_desc_1h}\n"
+            f"\n"
+            f"**📊 4h 周期:**\n"
+            f"  • 位置: {pos_desc_4h}\n"
+            f"  • 动能: {state_str}\n"
+            f"{slope_emoji} Signal斜率: `{slope_4h:+.6f}`\n"
+            f"\n"
+            f"⏱ **交叉时间间隔:** {time_gap_str}\n"
             f"📝 说明: 1h 与 4h 周期趋势空头共振"
         )

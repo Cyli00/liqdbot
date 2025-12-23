@@ -48,7 +48,7 @@ async def main():
 
     logging.info(f"Bot started. Monitoring interval: {MONITOR_INTERVAL}s.")
     logging.info(f"Default Symbol: {DEFAULT_SYMBOL if DEFAULT_SYMBOL else 'None'}")
-    logging.info(f"Multi-symbol monitoring enabled. Use /add to add symbols, /list to view.")
+    logging.info("Multi-symbol monitoring enabled. Use /add to add symbols, /list to view.")
     
     # 4. 手动管理生命周期
     await app.initialize()
