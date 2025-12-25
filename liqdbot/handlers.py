@@ -27,29 +27,41 @@ async def add_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         new_symbol = raw_symbol
 
+    # 先验证交易对是否存在
+    loading_msg = await update.message.reply_text(f"🔄 正在验证 `{new_symbol}`...", parse_mode='Markdown')
+    
+    is_valid = await engine.validate_symbol(new_symbol)
+    if not is_valid:
+        await loading_msg.edit_text(
+            f"❌ 交易对 `{new_symbol}` 不存在或无法访问\n"
+            f"💡 请检查代币名称是否正确",
+            parse_mode='Markdown'
+        )
+        return
+
     is_new = engine.add_symbol(new_symbol)
     
     current_symbols = engine.get_all_symbols()
     symbols_list = ", ".join([f"`{s}`" for s in current_symbols])
     
     if is_new:
-        await update.message.reply_text(
+        await loading_msg.edit_text(
             f"✅ 已添加监控: `{new_symbol}`\n"
             f"📋 当前监控列表: {symbols_list}\n"
             f"💡 共 {len(current_symbols)} 个标的", 
             parse_mode='Markdown'
         )
     else:
-        await update.message.reply_text(
+        await loading_msg.edit_text(
             f"⚠️ `{new_symbol}` 已在监控中，已重置状态\n"
             f"📋 当前监控列表: {symbols_list}", 
             parse_mode='Markdown'
         )
 
 
-async def delete_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def del_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    指令: /delete SOL 或 /delete （删除所有）
+    指令: /del SOL 或 /del （删除所有）
     """
     args = context.args
     current_symbols = engine.get_all_symbols()
@@ -63,8 +75,8 @@ async def delete_symbol_command(update: Update, context: ContextTypes.DEFAULT_TY
         symbols_list = ", ".join([f"`{s}`" for s in current_symbols])
         await update.message.reply_text(
             f"📋 当前监控列表: {symbols_list}\n\n"
-            f"💡 删除单个: `/delete SOL`\n"
-            f"💡 删除全部: `/delete all`",
+            f"💡 删除单个: `/del SOL`\n"
+            f"💡 删除全部: `/del all`",
             parse_mode='Markdown'
         )
         return

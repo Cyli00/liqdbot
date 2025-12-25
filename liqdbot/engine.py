@@ -59,6 +59,16 @@ class StrategyEngine:
             logging.info(f"已添加监控标的: {symbol}")
             return True
     
+    async def validate_symbol(self, symbol: str) -> bool:
+        """验证交易对是否在交易所存在"""
+        try:
+            # 尝试获取少量数据来验证交易对是否有效
+            await self.exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=1)
+            return True
+        except Exception as e:
+            logging.warning(f"交易对 {symbol} 验证失败: {e}")
+            return False
+    
     def remove_symbol(self, symbol: str) -> bool:
         """移除监控标的"""
         if symbol in self.symbols:
@@ -1058,43 +1068,40 @@ class StrategyEngine:
             # cisd_result['flag_at_last'] 对应的是 last_idx 的信号，即 current_ts
             if state.last_cisd_ts is None or current_ts > state.last_cisd_ts:
                 origin_level = cisd_result['origin_level_at_last']
-                
-                if cisd_result['flag_at_last'] == 1:
-                    # 看跌 CISD：检查是否有高点扫荡且价格低于被扫荡水平
-                    if (bars_since_high is not None and 
-                        wicked_high_level is not None and 
-                        current_price < wicked_high_level):
-                        msgs.append((
-                            AlertMessages.TYPE_BEARISH_STRONG_CISD,
-                            AlertMessages.bearish_strong_cisd(
-                                symbol, current_price, origin_level, 
+                if origin_level is None or (isinstance(origin_level, float) and math.isnan(origin_level)):
+                    state.last_cisd_ts = current_ts
+                else:
+                    if cisd_result['flag_at_last'] == 1:
+                        # 看跌 CISD：检查是否有高点扫荡且价格低于被扫荡水平
+                        if (bars_since_high is not None and 
+                            wicked_high_level is not None and 
+                            current_price < wicked_high_level):
+                            alert_type = AlertMessages.TYPE_BEARISH_STRONG_CISD
+                            alert_msg = AlertMessages.bearish_strong_cisd(
+                                symbol, current_price, origin_level,
                                 wicked_high_level, bars_since_high
                             )
-                        ))
+                        else:
+                            alert_type = AlertMessages.TYPE_BEARISH_NORMAL_CISD
+                            alert_msg = AlertMessages.bearish_normal_cisd(symbol, current_price, origin_level)
                     else:
-                        msgs.append((
-                            AlertMessages.TYPE_BEARISH_NORMAL_CISD,
-                            AlertMessages.bearish_normal_cisd(symbol, current_price, origin_level)
-                        ))
-                else:
-                    # 看涨 CISD：检查是否有低点扫荡且价格高于被扫荡水平
-                    if (bars_since_low is not None and 
-                        wicked_low_level is not None and 
-                        current_price > wicked_low_level):
-                        msgs.append((
-                            AlertMessages.TYPE_BULLISH_STRONG_CISD,
-                            AlertMessages.bullish_strong_cisd(
+                        # 看涨 CISD：检查是否有低点扫荡且价格高于被扫荡水平
+                        if (bars_since_low is not None and 
+                            wicked_low_level is not None and 
+                            current_price > wicked_low_level):
+                            alert_type = AlertMessages.TYPE_BULLISH_STRONG_CISD
+                            alert_msg = AlertMessages.bullish_strong_cisd(
                                 symbol, current_price, origin_level,
                                 wicked_low_level, bars_since_low
                             )
-                        ))
-                    else:
-                        msgs.append((
-                            AlertMessages.TYPE_BULLISH_NORMAL_CISD,
-                            AlertMessages.bullish_normal_cisd(symbol, current_price, origin_level)
-                        ))
-                
-                state.last_cisd_ts = current_ts
+                        else:
+                            alert_type = AlertMessages.TYPE_BULLISH_NORMAL_CISD
+                            alert_msg = AlertMessages.bullish_normal_cisd(symbol, current_price, origin_level)
+
+                    if state.should_send_cisd_origin_alert(cisd_result['flag_at_last'], origin_level, alert_type):
+                        msgs.append((alert_type, alert_msg))
+
+                    state.last_cisd_ts = current_ts
 
         # --- 5. MACD 共振策略 ---
         # 仅当 htf_df 可用时检测

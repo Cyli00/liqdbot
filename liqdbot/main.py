@@ -14,7 +14,7 @@ from liqdbot.config import TG_TOKEN, DEFAULT_SYMBOL, MONITOR_INTERVAL
 from liqdbot.engine import engine
 from liqdbot.handlers import (
     add_symbol_command,
-    delete_symbol_command,
+    del_symbol_command,
     list_symbols_command,
     status_command
 )
@@ -39,7 +39,7 @@ async def main():
     # 2. 注册命令
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CommandHandler("add", add_symbol_command))
-    app.add_handler(CommandHandler("delete", delete_symbol_command))
+    app.add_handler(CommandHandler("del", del_symbol_command))
     app.add_handler(CommandHandler("list", list_symbols_command))
 
     # 3. 注册定时任务 (每 60s = 1分钟)
@@ -48,7 +48,7 @@ async def main():
 
     logging.info(f"Bot started. Monitoring interval: {MONITOR_INTERVAL}s.")
     logging.info(f"Default Symbol: {DEFAULT_SYMBOL if DEFAULT_SYMBOL else 'None'}")
-    logging.info("Multi-symbol monitoring enabled. Use /add to add symbols, /list to view.")
+    logging.info("Multi-symbol monitoring enabled. Use /add to add symbols, /del to remove symbols, /list to view.")
     
     # 4. 手动管理生命周期
     await app.initialize()

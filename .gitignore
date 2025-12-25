@@ -6,3 +6,4 @@ uv*
 package-lock.json
 package.json
 pyproject.toml
+CLAUDE.md

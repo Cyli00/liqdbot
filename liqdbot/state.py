@@ -2,6 +2,7 @@
 状态管理模块 - 每个标的的独立状态容器
 """
 import time
+from collections import OrderedDict
 from .config import ALERT_COOLDOWN
 
 
@@ -80,6 +81,37 @@ class SymbolState:
         group = get_signal_group(alert_type)
         self.alert_sent_times[group] = time.time()
         self.alert_sent_strength[group] = SIGNAL_STRENGTH.get(alert_type, 1)
+
+    def should_send_cisd_origin_alert(self, flag: int, origin_level: float, alert_type: str, *, max_history: int = 200) -> bool:
+        """
+        CISD 起点价位去重（同一标的内）：
+        - 同方向(flag) + 同起点价位(按消息展示精度round到2位) 只提醒一次
+        - 若后续同 key 触发更强信号（如 normal -> strong），允许升级提醒
+        - 通过 max_history 限制历史长度，避免无限增长
+        """
+        try:
+            origin_key_level = round(float(origin_level), 2)
+        except Exception:
+            return True
+
+        key = (int(flag), origin_key_level)
+        new_strength = SIGNAL_STRENGTH.get(alert_type, 1)
+        prev_strength = self.cisd_origin_alert_strength.get(key, 0)
+
+        # 已提醒过且不更强：不再重复提醒
+        if new_strength <= prev_strength:
+            return False
+
+        # 记录/升级提醒强度，并做简单 LRU 裁剪
+        self.cisd_origin_alert_strength[key] = new_strength
+        try:
+            self.cisd_origin_alert_strength.move_to_end(key)
+        except Exception:
+            pass
+        while len(self.cisd_origin_alert_strength) > max_history:
+            self.cisd_origin_alert_strength.popitem(last=False)
+
+        return True
     
     def reset(self):
         """重置状态（标的被重新添加时调用）"""
@@ -87,6 +119,7 @@ class SymbolState:
         self.last_analysis = {}
         self.last_liq_signal_ts = None
         self.last_cisd_ts = None
+        self.cisd_origin_alert_strength = OrderedDict()
         self.notified_sweeps = set()
         self.alert_sent_times = {}
         self.alert_sent_strength = {}
