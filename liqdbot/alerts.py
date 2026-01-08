@@ -174,10 +174,10 @@ class AlertMessages:
         """MACD Resonance Golden Cross"""
         hist_state = info.get('hist_color', 'GRAY')
         emoji_map = {
-            "AQUA": "🟢 动能强劲 (Aqua)",
-            "BLUE": "⚪️ 动能减弱 (Blue)",
-            "RED": "🔴 动能反向增强 (Red)",
-            "MAROON": "🟡 动能反向减弱 (Maroon)"
+            "AQUA": "🟢 动能强劲",
+            "BLUE": "⚪️ 动能减弱",
+            "RED": "🔴 动能反向增强",
+            "MAROON": "🟡 动能反向减弱"
         }
         state_str = emoji_map.get(hist_state, hist_state)
         
@@ -203,10 +203,6 @@ class AlertMessages:
         else:
             time_gap_str = "未知"
         
-        # 4h Signal 斜率
-        slope_4h = info.get('slope_4h', 0.0)
-        slope_emoji = "📈" if slope_4h > 0 else "📉"
-        
         return (
             f"🚀 **MACD 1h/4h 共振金叉**\n"
             f"📍 标的: `{symbol}`\n"
@@ -220,7 +216,6 @@ class AlertMessages:
             f"**📊 4h 周期:**\n"
             f"  • 位置: {pos_desc_4h}\n"
             f"  • 动能: {state_str}\n"
-            f"{slope_emoji} Signal斜率: `{slope_4h:+.6f}`\n"
             f"\n"
             f"⏱ **交叉时间间隔:** {time_gap_str}\n"
             f"📝 说明: 1h 与 4h 周期趋势多头共振"
@@ -231,10 +226,10 @@ class AlertMessages:
         """MACD Resonance Death Cross"""
         hist_state = info.get('hist_color', 'GRAY')
         emoji_map = {
-            "AQUA": "🟢 动能反向强劲 (Aqua)",
-            "BLUE": "⚪️ 动能反向减弱 (Blue)",
-            "RED": "🔴 动能强劲 (Red)",
-            "MAROON": "🟡 动能减弱 (Maroon)"
+            "AQUA": "🟢 动能反向强劲",
+            "BLUE": "⚪️ 动能反向减弱",
+            "RED": "🔴 动能强劲",
+            "MAROON": "🟡 动能减弱"
         }
         state_str = emoji_map.get(hist_state, hist_state)
         
@@ -260,10 +255,6 @@ class AlertMessages:
         else:
             time_gap_str = "未知"
         
-        # 4h Signal 斜率
-        slope_4h = info.get('slope_4h', 0.0)
-        slope_emoji = "📈" if slope_4h > 0 else "📉"
-        
         return (
             f"📉 **MACD 1h/4h 共振死叉**\n"
             f"📍 标的: `{symbol}`\n"
@@ -277,7 +268,6 @@ class AlertMessages:
             f"**📊 4h 周期:**\n"
             f"  • 位置: {pos_desc_4h}\n"
             f"  • 动能: {state_str}\n"
-            f"{slope_emoji} Signal斜率: `{slope_4h:+.6f}`\n"
             f"\n"
             f"⏱ **交叉时间间隔:** {time_gap_str}\n"
             f"📝 说明: 1h 与 4h 周期趋势空头共振"

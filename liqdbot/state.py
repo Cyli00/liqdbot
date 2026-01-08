@@ -132,3 +132,4 @@ class SymbolState:
         self.last_macd_resonance = 0
         self.last_macd_resonance_ts = None  # 上次MACD共振触发的K线时间戳
         self.last_macd_check_15m_ts = None  # 上次MACD检测时的15分钟K线时间戳
+        self.last_spike_ts = None  # Spike 报警去重：上次 spike 对应的主周期 K 线时间戳

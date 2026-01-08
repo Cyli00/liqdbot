@@ -305,19 +305,22 @@ class StrategyEngine:
             vol_vals = ldf['volume'].to_numpy()
             
             # 向量化计算上下行量
+            # 对齐 Pine: close == open (Doji) 不计入任一方向，避免系统性偏向 down_vol
             is_up = close_vals > open_vals
+            is_down = close_vals < open_vals
             ldf['up_vol'] = np.where(is_up, vol_vals, 0)
-            ldf['down_vol'] = np.where(~is_up, vol_vals, 0)
+            ldf['down_vol'] = np.where(is_down, vol_vals, 0)
             ldf['bucket'] = ldf['timestamp'].dt.floor(self._pandas_freq(TIMEFRAME))
             
             # groupby 聚合（这一步无法完全避免，但数据量已通过增量更新控制）
             vol_agg = ldf.groupby('bucket')[['up_vol', 'down_vol']].sum()
             df = df.merge(vol_agg, left_on='timestamp', right_index=True, how='left')
         else:
-            df['up_vol'] = 0
-            df['down_vol'] = 0
+            df['up_vol'] = np.nan
+            df['down_vol'] = np.nan
 
-        df[['up_vol', 'down_vol']] = df[['up_vol', 'down_vol']].fillna(0)
+        # 对齐 Pine: 不用 fillna(0) 填充缺失低周期数据，保持 NaN 并跳过 spike 判定
+        # df[['up_vol', 'down_vol']] = df[['up_vol', 'down_vol']].fillna(0)  # 已移除
 
         # 1. Supertrend (趋势)
         st = df.ta.supertrend(length=10, multiplier=2.0)
@@ -330,10 +333,11 @@ class StrategyEngine:
             df['supertrend_dir'] = 0
 
         # 2. Volume Z-Score (爆仓量)
+        # 对齐 Pine: 使用 ddof=0 (总体标准差) 匹配 ta.stdev
         up_mean = df['up_vol'].rolling(self.z_len).mean()
-        up_std = df['up_vol'].rolling(self.z_len).std().replace(0, np.nan)
+        up_std = df['up_vol'].rolling(self.z_len).std(ddof=0).replace(0, np.nan)
         down_mean = df['down_vol'].rolling(self.z_len).mean()
-        down_std = df['down_vol'].rolling(self.z_len).std().replace(0, np.nan)
+        down_std = df['down_vol'].rolling(self.z_len).std(ddof=0).replace(0, np.nan)
 
         df['z_up'] = (df['up_vol'] - up_mean) / up_std
         df['z_down'] = (df['down_vol'] - down_mean) / down_std
@@ -639,15 +643,20 @@ class StrategyEngine:
             if is_cross:
                 plottrnd[i] = 0
 
+            # 对齐 Pine: ST flip 后无论是否在 timeout 窗口内都清 valid
             if i > 0 and prev_dir > 0 and direction < 0 and lastliqdir == 1 and valid:
-                if self.timeout_bars == 0 or i - lastliqidx <= self.timeout_bars:
+                bars_elapsed = i - lastliqidx
+                if self.timeout_bars == 0 or bars_elapsed < self.timeout_bars:
                     plottrnd[i] = 1
-                    valid = False
+                    logging.debug(f"[LiqReversal] Bear ST Start @ bar {i}: lastliqidx={lastliqidx}, bars_elapsed={bars_elapsed}, timeout={self.timeout_bars}")
+                valid = False  # 无论是否触发都清除，避免过期悬挂
 
             if i > 0 and prev_dir < 0 and direction > 0 and lastliqdir == -1 and valid:
-                if self.timeout_bars == 0 or i - lastliqidx <= self.timeout_bars:
+                bars_elapsed = i - lastliqidx
+                if self.timeout_bars == 0 or bars_elapsed < self.timeout_bars:
                     plottrnd[i] = -1
-                    valid = False
+                    logging.debug(f"[LiqReversal] Bull ST Start @ bar {i}: lastliqidx={lastliqidx}, bars_elapsed={bars_elapsed}, timeout={self.timeout_bars}")
+                valid = False  # 无论是否触发都清除，避免过期悬挂
 
             if short_liq:
                 lastliqdir = -1
@@ -655,6 +664,8 @@ class StrategyEngine:
                 valid = True
                 if i == n - 1:
                     short_liq_at_last = True
+                    z_up_val = df['z_up'].iloc[i]
+                    logging.debug(f"[LiqReversal] Short Liq Spike @ bar {i}: z_up={z_up_val:.2f}, thresh={self.z_thresh}, dir={direction}")
 
             if long_liq:
                 lastliqdir = 1
@@ -662,6 +673,8 @@ class StrategyEngine:
                 valid = True
                 if i == n - 1:
                     long_liq_at_last = True
+                    z_down_val = df['z_down'].iloc[i]
+                    logging.debug(f"[LiqReversal] Long Liq Spike @ bar {i}: z_down={z_down_val:.2f}, thresh={self.z_thresh}, dir={direction}")
 
         new_bull = plottrnd[-1] == -1 and (n == 1 or plottrnd[-2] != -1)
         new_bear = plottrnd[-1] == 1 and (n == 1 or plottrnd[-2] != 1)
@@ -877,13 +890,63 @@ class StrategyEngine:
         ts_1h = last_1h['timestamp']
         
         # 1. 1h 快线倾斜角计算（度数）
-        # 标准化斜率已在 calculate_indicators 中计算
-        # 倾斜角 = arctan(斜率) * 180 / pi
-        dif_slope_1h = last_1h.get('dif_slope', 0) if not pd.isna(last_1h.get('dif_slope')) else 0
-        dif_angle_1h = math.degrees(math.atan(dif_slope_1h)) if dif_slope_1h != 0 else 0
+        # 使用上一根已收盘K线收盘时刻作为 x2，当前时刻作为 x1
+        dif_slope_1h = 0.0
+        dif_angle_1h = 0.0
+        dif_slope_grade_1h = 0
+        slope_valid = False
+        
+        atr_1h = last_1h.get('ATR_14')
+        last_open_ts = last_1h.get('timestamp')
+        if (atr_1h is not None and not pd.isna(atr_1h) and atr_1h != 0 and
+                last_open_ts is not None and not pd.isna(last_open_ts) and
+                not pd.isna(mac_1h) and not pd.isna(prev_mac_1h)):
+            bar_minutes = self._timeframe_to_minutes(TIMEFRAME)
+            bar_seconds = max(bar_minutes * 60, 1)
+            now_ts = pd.Timestamp.utcnow()
+            x2_ts = last_open_ts
+            bar_close_ts = x2_ts + pd.Timedelta(seconds=bar_seconds)
+            x1_ts = now_ts
+            if x1_ts < x2_ts:
+                x1_ts = x2_ts
+            elif x1_ts > bar_close_ts:
+                x1_ts = bar_close_ts
+            dt_hours = max((x1_ts - x2_ts).total_seconds() / 3600.0, 1e-6)
+            dif_change = mac_1h - prev_mac_1h
+            dif_slope_1h = (dif_change / atr_1h) / dt_hours
+            slope_valid = True
+        
+        if slope_valid:
+            dif_angle_1h = math.degrees(math.atan(dif_slope_1h))
+        else:
+            fallback_slope = last_1h.get('dif_slope', 0)
+            dif_slope_1h = fallback_slope if not pd.isna(fallback_slope) else 0
+            dif_angle_1h = math.degrees(math.atan(dif_slope_1h)) if dif_slope_1h != 0 else 0
         
         # 斜率等级（基于历史分位数）
-        dif_slope_grade_1h = int(last_1h.get('dif_slope_grade', 0)) if not pd.isna(last_1h.get('dif_slope_grade')) else 0
+        if slope_valid:
+            q20 = last_1h.get('dif_slope_q20')
+            q40 = last_1h.get('dif_slope_q40')
+            q60 = last_1h.get('dif_slope_q60')
+            q80 = last_1h.get('dif_slope_q80')
+            if not pd.isna(q20) and not pd.isna(q40) and not pd.isna(q60) and not pd.isna(q80):
+                abs_slope = abs(dif_slope_1h)
+                if abs_slope < q20:
+                    dif_slope_grade_1h = 1
+                elif abs_slope < q40:
+                    dif_slope_grade_1h = 2
+                elif abs_slope < q60:
+                    dif_slope_grade_1h = 3
+                elif abs_slope < q80:
+                    dif_slope_grade_1h = 4
+                else:
+                    dif_slope_grade_1h = 5
+            else:
+                fallback_grade = last_1h.get('dif_slope_grade', 0)
+                dif_slope_grade_1h = int(fallback_grade) if not pd.isna(fallback_grade) else 0
+        else:
+            fallback_grade = last_1h.get('dif_slope_grade', 0)
+            dif_slope_grade_1h = int(fallback_grade) if not pd.isna(fallback_grade) else 0
         
         # 2. 零轴位置判断
         # 金叉在零轴下方 = 左侧信号（更早期），零轴上方 = 右侧信号（趋势确认）
@@ -898,15 +961,27 @@ class StrategyEngine:
         # 确定要找的交叉类型
         is_golden = res_golden
         
-        # 查找1h最近的交叉时间
-        cross_1h_time = self._find_last_cross_time(df, 'MACD_12_26_9', 'MACDs_12_26_9', is_golden)
+        # 查找1h最近的交叉时间及方向
+        cross_1h_time, cross_1h_is_golden = self._find_last_cross_info(
+            df, 'MACD_12_26_9', 'MACDs_12_26_9'
+        )
         
-        # 查找4h最近的交叉时间  
-        cross_4h_time = self._find_last_cross_time(htf_df, 'MACD', 'Signal', is_golden)
+        # 查找4h最近的交叉时间及方向
+        cross_4h_time, cross_4h_is_golden = self._find_last_cross_info(
+            htf_df, 'MACD', 'Signal'
+        )
         
-        if cross_1h_time is not None and cross_4h_time is not None:
+        if (cross_1h_time is not None and cross_4h_time is not None and
+                cross_1h_is_golden == cross_4h_is_golden == is_golden):
             time_diff = abs((cross_1h_time - cross_4h_time).total_seconds())
             cross_time_gap_hours = time_diff / 3600
+            max_gap_hours = self._timeframe_to_minutes(self.htf_timeframe) / 60.0
+            if cross_time_gap_hours > max_gap_hours:
+                cross_time_gap_hours = None
+        else:
+            cross_1h_time = None
+            cross_4h_time = None
+            cross_time_gap_hours = None
         
         # 辅助数据
         slope_4h = last_4h.get('Signal_Slope', 0.0)
@@ -973,6 +1048,37 @@ class StrategyEngine:
                 return df['timestamp'].iloc[i]
         
         return None
+
+    def _find_last_cross_info(self, df, macd_col: str, signal_col: str):
+        """
+        查找最近一次交叉的时间与方向（True=金叉, False=死叉）
+        """
+        if df is None or len(df) < 2:
+            return None, None
+        
+        if macd_col not in df.columns or signal_col not in df.columns:
+            return None, None
+        
+        for i in range(len(df) - 1, 0, -1):
+            curr_mac = df[macd_col].iloc[i]
+            curr_sig = df[signal_col].iloc[i]
+            prev_mac = df[macd_col].iloc[i - 1]
+            prev_sig = df[signal_col].iloc[i - 1]
+            
+            if pd.isna(curr_mac) or pd.isna(curr_sig) or pd.isna(prev_mac) or pd.isna(prev_sig):
+                continue
+            
+            is_bull_now = curr_mac > curr_sig
+            was_bear = prev_mac < prev_sig
+            is_bear_now = curr_mac < curr_sig
+            was_bull = prev_mac > prev_sig
+            
+            if was_bear and is_bull_now:
+                return df['timestamp'].iloc[i], True
+            if was_bull and is_bear_now:
+                return df['timestamp'].iloc[i], False
+        
+        return None, None
 
     def analyze_market(self, symbol: str, state: SymbolState, df, htf_df=None):
         """分析指定标的的市场状况"""
@@ -1047,16 +1153,24 @@ class StrategyEngine:
                 state.last_liq_signal_ts = liq_signal_ts
 
         # --- 3. Liquidation Reversal 策略: Liquidation Spike Alerts ---
+        # 对齐 Pine: 按主周期 K 线时间戳去重，确保同一根 K 线只报一次 spike
+        spike_candle_ts = current_ts
+        last_spike_ts = getattr(state, 'last_spike_ts', None)
+        
         if liq_result['short_liq_at_last']:
-            msgs.append((
-                AlertMessages.TYPE_SHORT_LIQ_SPIKE,
-                AlertMessages.short_liq_spike(symbol, current_price)
-            ))
+            if last_spike_ts is None or spike_candle_ts > last_spike_ts:
+                msgs.append((
+                    AlertMessages.TYPE_SHORT_LIQ_SPIKE,
+                    AlertMessages.short_liq_spike(symbol, current_price)
+                ))
+                state.last_spike_ts = spike_candle_ts
         if liq_result['long_liq_at_last']:
-            msgs.append((
-                AlertMessages.TYPE_LONG_LIQ_SPIKE,
-                AlertMessages.long_liq_spike(symbol, current_price)
-            ))
+            if last_spike_ts is None or spike_candle_ts > last_spike_ts:
+                msgs.append((
+                    AlertMessages.TYPE_LONG_LIQ_SPIKE,
+                    AlertMessages.long_liq_spike(symbol, current_price)
+                ))
+                state.last_spike_ts = spike_candle_ts
 
         # --- 4. CISD 策略: Normal/Strong CISD Alerts ---
         # 使用辅助方法在 liquidity_lookback 窗口内查找最近被扫荡的 swing level
