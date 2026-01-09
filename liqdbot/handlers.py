@@ -190,7 +190,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sup_txt = f"`{res['nearest_sup']:.2f}`" if res['nearest_sup'] else "无"
         
         msg = f"📊 **{res['symbol']}** | `{res['price']:.2f}`\n"
-        msg += f"🧭 {res['trend_dir']} | 趋势线: `{res['trend_support']:.2f}`\n"
         msg += f"⬆️ 上方阻力: {res_txt}\n"
         msg += f"⬇️ 下方支撑: {sup_txt}\n"
         

@@ -41,10 +41,6 @@ FETCH_LIMIT = int(os.getenv("FETCH_LIMIT", "400"))  # 主要 K 线拉取数量
 MONITOR_INTERVAL = 60  # 1分钟监控一次
 
 # --- 策略参数（贴合 Pine） ---
-Z_LENGTH = int(os.getenv("Z_LENGTH", "200"))
-Z_THRESH = float(os.getenv("Z_THRESH", "3.0"))
-TIMEOUT_BARS = int(os.getenv("TIMEOUT_BARS", "50"))  # Supertrend 反转需在该窗口内确认
-
 PIVOT_LEN = int(os.getenv("PIVOT_LEN", "12"))
 EXPIRY_BARS = int(os.getenv("EXPIRY_BARS", "100"))
 LIQUIDITY_LOOKBACK = int(os.getenv("LIQUIDITY_LOOKBACK", "10"))

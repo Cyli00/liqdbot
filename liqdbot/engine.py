@@ -11,7 +11,7 @@ import ccxt.async_support as ccxt
 
 from .config import (
     DEFAULT_SYMBOL, TIMEFRAME, LOWER_TIMEFRAME, FETCH_LIMIT,
-    Z_LENGTH, Z_THRESH, TIMEOUT_BARS, PIVOT_LEN, EXPIRY_BARS,
+    PIVOT_LEN, EXPIRY_BARS,
     LIQUIDITY_LOOKBACK, HIDE_EXPIRED_LEVELS, HIDE_MITIGATED_LEVELS,
     CISD_TOLERANCE
 )
@@ -30,9 +30,6 @@ class StrategyEngine:
         
         # 策略参数（全局共享）
         self.lower_timeframe = LOWER_TIMEFRAME
-        self.timeout_bars = TIMEOUT_BARS
-        self.z_len = Z_LENGTH
-        self.z_thresh = Z_THRESH
         self.pivot_len = PIVOT_LEN
         self.expiry_bars = EXPIRY_BARS
         self.liquidity_lookback = LIQUIDITY_LOOKBACK
@@ -319,31 +316,7 @@ class StrategyEngine:
             df['up_vol'] = np.nan
             df['down_vol'] = np.nan
 
-        # 对齐 Pine: 不用 fillna(0) 填充缺失低周期数据，保持 NaN 并跳过 spike 判定
-        # df[['up_vol', 'down_vol']] = df[['up_vol', 'down_vol']].fillna(0)  # 已移除
-
-        # 1. Supertrend (趋势)
-        st = df.ta.supertrend(length=10, multiplier=2.0)
-        
-        if st is not None and not st.empty:
-            df['supertrend'] = st[f'SUPERT_{10}_{2.0}']
-            df['supertrend_dir'] = st[f'SUPERTd_{10}_{2.0}']
-        else:
-            df['supertrend'] = np.nan
-            df['supertrend_dir'] = 0
-
-        # 2. Volume Z-Score (爆仓量)
-        # 对齐 Pine: 使用 ddof=0 (总体标准差) 匹配 ta.stdev
-        up_mean = df['up_vol'].rolling(self.z_len).mean()
-        up_std = df['up_vol'].rolling(self.z_len).std(ddof=0).replace(0, np.nan)
-        down_mean = df['down_vol'].rolling(self.z_len).mean()
-        down_std = df['down_vol'].rolling(self.z_len).std(ddof=0).replace(0, np.nan)
-
-        df['z_up'] = (df['up_vol'] - up_mean) / up_std
-        df['z_down'] = (df['down_vol'] - down_mean) / down_std
-        df[['z_up', 'z_down']] = df[['z_up', 'z_down']].replace([np.inf, -np.inf], np.nan)
-
-        # 3. Pivot Points (震荡结构) - 向量化优化
+        # Pivot Points (震荡结构) - 向量化优化
         # 使用滚动窗口计算，避免 Python 循环
         pivot_len = self.pivot_len
         n = len(df)
@@ -621,72 +594,6 @@ class StrategyEngine:
         # 取 mitigated_at 最大的（即最近被扫荡的）
         candidates.sort(key=lambda x: x[1], reverse=True)
         return candidates[0][0], candidates[0][2]
-
-    def detect_liq_reversal(self, df):
-        """检测 Liquidation Reversal 信号"""
-        n = len(df)
-        plottrnd = [0] * n
-        lastliqdir = 0
-        lastliqidx = 0
-        valid = False
-        short_liq_at_last = False
-        long_liq_at_last = False
-
-        for i in range(n):
-            direction = df['supertrend_dir'].iloc[i]
-            prev_dir = df['supertrend_dir'].iloc[i-1] if i > 0 else direction
-
-            short_liq = direction < 0 and df['z_up'].iloc[i] > self.z_thresh
-            long_liq = direction > 0 and df['z_down'].iloc[i] > self.z_thresh
-
-            is_cross = i > 0 and direction != prev_dir and direction * prev_dir <= 0
-            if is_cross:
-                plottrnd[i] = 0
-
-            # 对齐 Pine: ST flip 后无论是否在 timeout 窗口内都清 valid
-            if i > 0 and prev_dir > 0 and direction < 0 and lastliqdir == 1 and valid:
-                bars_elapsed = i - lastliqidx
-                if self.timeout_bars == 0 or bars_elapsed < self.timeout_bars:
-                    plottrnd[i] = 1
-                    logging.debug(f"[LiqReversal] Bear ST Start @ bar {i}: lastliqidx={lastliqidx}, bars_elapsed={bars_elapsed}, timeout={self.timeout_bars}")
-                valid = False  # 无论是否触发都清除，避免过期悬挂
-
-            if i > 0 and prev_dir < 0 and direction > 0 and lastliqdir == -1 and valid:
-                bars_elapsed = i - lastliqidx
-                if self.timeout_bars == 0 or bars_elapsed < self.timeout_bars:
-                    plottrnd[i] = -1
-                    logging.debug(f"[LiqReversal] Bull ST Start @ bar {i}: lastliqidx={lastliqidx}, bars_elapsed={bars_elapsed}, timeout={self.timeout_bars}")
-                valid = False  # 无论是否触发都清除，避免过期悬挂
-
-            if short_liq:
-                lastliqdir = -1
-                lastliqidx = i
-                valid = True
-                if i == n - 1:
-                    short_liq_at_last = True
-                    z_up_val = df['z_up'].iloc[i]
-                    logging.debug(f"[LiqReversal] Short Liq Spike @ bar {i}: z_up={z_up_val:.2f}, thresh={self.z_thresh}, dir={direction}")
-
-            if long_liq:
-                lastliqdir = 1
-                lastliqidx = i
-                valid = True
-                if i == n - 1:
-                    long_liq_at_last = True
-                    z_down_val = df['z_down'].iloc[i]
-                    logging.debug(f"[LiqReversal] Long Liq Spike @ bar {i}: z_down={z_down_val:.2f}, thresh={self.z_thresh}, dir={direction}")
-
-        new_bull = plottrnd[-1] == -1 and (n == 1 or plottrnd[-2] != -1)
-        new_bear = plottrnd[-1] == 1 and (n == 1 or plottrnd[-2] != 1)
-
-        return {
-            'plottrnd': plottrnd,
-            'short_liq_at_last': short_liq_at_last,
-            'long_liq_at_last': long_liq_at_last,
-            'new_bull_reversal': new_bull,
-            'new_bear_reversal': new_bear,
-            'last_idx': n - 1
-        }
 
     def detect_cisd(self, df):
         """
@@ -1097,12 +1004,10 @@ class StrategyEngine:
         last_candle = df.iloc[-1]
         current_price = last_candle['close']
         current_ts = last_candle['timestamp']
-        supertrend_val = last_candle['supertrend']
 
         # 更新 Pivot 数据库
         self.update_swing_levels(df, state)
 
-        liq_result = self.detect_liq_reversal(df)
         cisd_result = self.detect_cisd(df)
 
         msgs = []
@@ -1127,52 +1032,7 @@ class StrategyEngine:
                         ))
                     state.notified_sweeps.add(key)
 
-        # --- 2. Liquidation Reversal 策略: Bullish/Bearish ST Start Alerts ---
-        curr_dir = last_candle['supertrend_dir']
-        if curr_dir == 1:
-            trend_dir = "多头 🐂"
-        elif curr_dir == -1:
-            trend_dir = "空头 🐻"
-        else:
-            trend_dir = "未知"
-        liq_signal_ts = df['timestamp'].iloc[liq_result['last_idx']]
-        
-        if liq_result['new_bull_reversal']:
-            if state.last_liq_signal_ts is None or liq_signal_ts > state.last_liq_signal_ts:
-                msgs.append((
-                    AlertMessages.TYPE_BULLISH_ST_START,
-                    AlertMessages.bullish_st_start(symbol, current_price, supertrend_val)
-                ))
-                state.last_liq_signal_ts = liq_signal_ts
-        if liq_result['new_bear_reversal']:
-            if state.last_liq_signal_ts is None or liq_signal_ts > state.last_liq_signal_ts:
-                msgs.append((
-                    AlertMessages.TYPE_BEARISH_ST_START,
-                    AlertMessages.bearish_st_start(symbol, current_price, supertrend_val)
-                ))
-                state.last_liq_signal_ts = liq_signal_ts
-
-        # --- 3. Liquidation Reversal 策略: Liquidation Spike Alerts ---
-        # 对齐 Pine: 按主周期 K 线时间戳去重，确保同一根 K 线只报一次 spike
-        spike_candle_ts = current_ts
-        last_spike_ts = getattr(state, 'last_spike_ts', None)
-        
-        if liq_result['short_liq_at_last']:
-            if last_spike_ts is None or spike_candle_ts > last_spike_ts:
-                msgs.append((
-                    AlertMessages.TYPE_SHORT_LIQ_SPIKE,
-                    AlertMessages.short_liq_spike(symbol, current_price)
-                ))
-                state.last_spike_ts = spike_candle_ts
-        if liq_result['long_liq_at_last']:
-            if last_spike_ts is None or spike_candle_ts > last_spike_ts:
-                msgs.append((
-                    AlertMessages.TYPE_LONG_LIQ_SPIKE,
-                    AlertMessages.long_liq_spike(symbol, current_price)
-                ))
-                state.last_spike_ts = spike_candle_ts
-
-        # --- 4. CISD 策略: Normal/Strong CISD Alerts ---
+        # --- 2. CISD 策略: Normal/Strong CISD Alerts ---
         # 使用辅助方法在 liquidity_lookback 窗口内查找最近被扫荡的 swing level
         bars_since_high, wicked_high_level = self._find_recent_wicked_level(state, last_idx, 'high')
         bars_since_low, wicked_low_level = self._find_recent_wicked_level(state, last_idx, 'low')
@@ -1276,8 +1136,8 @@ class StrategyEngine:
         result = {
             'symbol': symbol,
             'price': current_price,
-            'trend_dir': trend_dir,
-            'trend_support': supertrend_val,
+            'trend_dir': None,
+            'trend_support': None,
             'nearest_res': nearest_res,
             'nearest_sup': nearest_sup,
             'alerts': msgs,

@@ -8,12 +8,6 @@ from .config import ALERT_COOLDOWN
 
 # 信号强度等级定义（数值越大越强）
 SIGNAL_STRENGTH = {
-    # Liquidation Reversal 策略
-    "short_liq_spike": 1,        # 普通爆仓信号
-    "long_liq_spike": 1,
-    "bullish_st_start": 2,       # ST确认信号（更强）
-    "bearish_st_start": 2,
-    
     # CISD 策略
     "swing_high_mitigation": 1,  # 普通扫单
     "swing_low_mitigation": 1,
@@ -29,8 +23,8 @@ SIGNAL_STRENGTH = {
 
 # 信号分组（同组内比较强度）
 SIGNAL_GROUPS = {
-    "bullish": ["long_liq_spike", "swing_low_mitigation", "bullish_normal_cisd", "bullish_strong_cisd", "bullish_st_start", "macd_resonance_golden"],
-    "bearish": ["short_liq_spike", "swing_high_mitigation", "bearish_normal_cisd", "bearish_strong_cisd", "bearish_st_start", "macd_resonance_death"],
+    "bullish": ["swing_low_mitigation", "bullish_normal_cisd", "bullish_strong_cisd", "macd_resonance_golden"],
+    "bearish": ["swing_high_mitigation", "bearish_normal_cisd", "bearish_strong_cisd", "macd_resonance_death"],
 }
 
 SIGNAL_GROUP_BY_TYPE = {
@@ -117,7 +111,6 @@ class SymbolState:
         """重置状态（标的被重新添加时调用）"""
         self.swing_levels = []
         self.last_analysis = {}
-        self.last_liq_signal_ts = None
         self.last_cisd_ts = None
         self.cisd_origin_alert_strength = OrderedDict()
         self.notified_sweeps = set()
@@ -132,4 +125,3 @@ class SymbolState:
         self.last_macd_resonance = 0
         self.last_macd_resonance_ts = None  # 上次MACD共振触发的K线时间戳
         self.last_macd_check_15m_ts = None  # 上次MACD检测时的15分钟K线时间戳
-        self.last_spike_ts = None  # Spike 报警去重：上次 spike 对应的主周期 K 线时间戳
