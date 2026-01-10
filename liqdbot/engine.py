@@ -885,7 +885,7 @@ class StrategyEngine:
         ):
             bar_minutes = self._timeframe_to_minutes(TIMEFRAME)
             bar_seconds = max(bar_minutes * 60, 1)
-            now_ts = pd.Timestamp.utcnow()
+            now_ts = pd.Timestamp.utcnow().tz_localize(None)
             x2_ts = last_open_ts
             bar_close_ts = x2_ts + pd.Timedelta(seconds=bar_seconds)
             x1_ts = now_ts
