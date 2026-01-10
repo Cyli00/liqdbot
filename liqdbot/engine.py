@@ -779,7 +779,7 @@ class StrategyEngine:
             "origin_idx_at_last": origin_idx[last_idx] if origin_idx else None,
         }
 
-    def check_macd_resonance(self, df, htf_df):
+    def check_macd_resonance(self, df, htf_df, symbol: str | None = None):
         """
         检查 MACD 1h/4h 共振
 
@@ -885,7 +885,16 @@ class StrategyEngine:
         ):
             bar_minutes = self._timeframe_to_minutes(TIMEFRAME)
             bar_seconds = max(bar_minutes * 60, 1)
-            now_ts = pd.Timestamp.utcnow().tz_localize(None)
+            # 根据市场类型选择时区：加密货币用 UTC，A股用北京时间
+            if symbol is not None and detect_market_type(symbol) == MarketType.A_SHARE:
+                from datetime import datetime
+                from zoneinfo import ZoneInfo
+
+                now_ts = pd.Timestamp(
+                    datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+                )
+            else:
+                now_ts = pd.Timestamp.utcnow().tz_localize(None)
             x2_ts = last_open_ts
             bar_close_ts = x2_ts + pd.Timedelta(seconds=bar_seconds)
             x1_ts = now_ts
@@ -1227,7 +1236,7 @@ class StrategyEngine:
                 df_with_macd = self.calculate_macd_indicators(df)
 
                 res_val, res_info, res_ts = self.check_macd_resonance(
-                    df_with_macd, htf_df
+                    df_with_macd, htf_df, symbol
                 )
 
                 # 使用 K线时间戳去重，确保同一根K线只触发一次
