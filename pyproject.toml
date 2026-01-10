@@ -1,0 +1,21 @@
+[project]
+name = "liqdbot"
+version = "0.1.1"
+description = "Telegram bot for monitoring crypto and China A-share markets"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp>=3.13.2",
+    "akshare>=1.18.0",
+    "ccxt>=4.5.24",
+    "numpy>=2.2.6",
+    "pandas>=2.3.3",
+    "pandas-ta>=0.4.71b0",
+    "python-dotenv>=1.2.1",
+    "python-telegram-bot[job-queue]>=22.5",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.10",
+]

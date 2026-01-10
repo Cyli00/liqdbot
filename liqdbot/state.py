@@ -1,6 +1,7 @@
 """
 状态管理模块 - 每个标的的独立状态容器
 """
+
 import time
 from collections import OrderedDict
 from .config import ALERT_COOLDOWN
@@ -11,26 +12,36 @@ SIGNAL_STRENGTH = {
     # CISD 策略
     "swing_high_mitigation": 1,  # 普通扫单
     "swing_low_mitigation": 1,
-    "bearish_normal_cisd": 2,    # 普通CISD
+    "bearish_normal_cisd": 2,  # 普通CISD
     "bullish_normal_cisd": 2,
-    "bearish_strong_cisd": 3,    # 强CISD（最强）
+    "bearish_strong_cisd": 3,  # 强CISD（最强）
     "bullish_strong_cisd": 3,
-    
     # MACD 共振策略
     "macd_resonance_golden": 3,
     "macd_resonance_death": 3,
+    # MA5 策略 (A股专属)
+    "below_ma5": 2,
 }
 
 # 信号分组（同组内比较强度）
 SIGNAL_GROUPS = {
-    "bullish": ["swing_low_mitigation", "bullish_normal_cisd", "bullish_strong_cisd", "macd_resonance_golden"],
-    "bearish": ["swing_high_mitigation", "bearish_normal_cisd", "bearish_strong_cisd", "macd_resonance_death"],
+    "bullish": [
+        "swing_low_mitigation",
+        "bullish_normal_cisd",
+        "bullish_strong_cisd",
+        "macd_resonance_golden",
+    ],
+    "bearish": [
+        "swing_high_mitigation",
+        "bearish_normal_cisd",
+        "bearish_strong_cisd",
+        "macd_resonance_death",
+    ],
+    "ma5": ["below_ma5"],
 }
 
 SIGNAL_GROUP_BY_TYPE = {
-    alert_type: group
-    for group, types in SIGNAL_GROUPS.items()
-    for alert_type in types
+    alert_type: group for group, types in SIGNAL_GROUPS.items() for alert_type in types
 }
 
 
@@ -41,11 +52,11 @@ def get_signal_group(alert_type: str) -> str:
 
 class SymbolState:
     """每个标的的独立状态"""
-    
+
     def __init__(self, symbol: str):
         self.symbol = symbol
         self.reset()
-    
+
     def can_send_alert(self, alert_type: str) -> bool:
         """
         检查是否可以发送该类型的alert
@@ -59,24 +70,26 @@ class SymbolState:
         last_sent = self.alert_sent_times.get(group, 0)
         last_strength = self.alert_sent_strength.get(group, 0)
         new_strength = SIGNAL_STRENGTH.get(alert_type, 1)
-        
+
         # 冷却期外，可以发送
         if (now - last_sent) >= ALERT_COOLDOWN:
             return True
-        
+
         # 冷却期内，但新信号更强，也可以发送
         if new_strength > last_strength:
             return True
-        
+
         return False
-    
+
     def mark_alert_sent(self, alert_type: str):
         """记录alert发送时间和强度"""
         group = get_signal_group(alert_type)
         self.alert_sent_times[group] = time.time()
         self.alert_sent_strength[group] = SIGNAL_STRENGTH.get(alert_type, 1)
 
-    def should_send_cisd_origin_alert(self, flag: int, origin_level: float, alert_type: str, *, max_history: int = 200) -> bool:
+    def should_send_cisd_origin_alert(
+        self, flag: int, origin_level: float, alert_type: str, *, max_history: int = 200
+    ) -> bool:
         """
         CISD 起点价位去重（同一标的内）：
         - 同方向(flag) + 同起点价位(按消息展示精度round到2位) 只提醒一次
@@ -106,7 +119,7 @@ class SymbolState:
             self.cisd_origin_alert_strength.popitem(last=False)
 
         return True
-    
+
     def reset(self):
         """重置状态（标的被重新添加时调用）"""
         self.swing_levels = []
@@ -121,7 +134,10 @@ class SymbolState:
         self.cached_lower_df = None
         self.cached_htf_df = None
         self.last_fetch_time = 0
-        self.last_htf_fetch_time = None  # HTF 数据上次拉取时间（优化：4h数据不需要每分钟拉取）
+        self.last_htf_fetch_time = (
+            None  # HTF 数据上次拉取时间（优化：4h数据不需要每分钟拉取）
+        )
         self.last_macd_resonance = 0
         self.last_macd_resonance_ts = None  # 上次MACD共振触发的K线时间戳
         self.last_macd_check_15m_ts = None  # 上次MACD检测时的15分钟K线时间戳
+        self.last_ma5_alert_bar_ts = None  # 上次 MA5 跌破提醒的 K 线时间戳

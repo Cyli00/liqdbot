@@ -1,6 +1,7 @@
 """
 配置模块 - 从环境变量加载所有配置
 """
+
 import os
 import logging
 from dotenv import load_dotenv
@@ -10,8 +11,7 @@ load_dotenv()
 
 # 配置日志
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
 # 降低 httpx 和 telegram 网络相关的日志级别，避免网络波动时大量 ERROR 日志
@@ -54,3 +54,11 @@ RETRY_DELAY = 5  # 秒
 
 # --- Alert 去重配置 ---
 ALERT_COOLDOWN = 180  # 3分钟内同类型alert不重复发送
+
+# --- A股配置 ---
+DEFAULT_ASHARE_SYMBOL = os.getenv("ASHARE_SYMBOL", "sh000001")  # 默认上证指数
+ASHARE_TIMEFRAME = "60m"
+ASHARE_HTF_TIMEFRAME = "60m"  # MACD 共振高周期
+ASHARE_LTF_TIMEFRAME = "15m"  # MACD 共振低周期
+ASHARE_LOWER_TIMEFRAME = "15m"  # 上下行量计算
+ASHARE_MA_PERIOD = 5  # 5日均线

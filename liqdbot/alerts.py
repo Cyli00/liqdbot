@@ -5,7 +5,7 @@ Alert 消息模板 - 定义所有 Telegram 通知消息的格式
 
 class AlertMessages:
     """定义所有 Alert 消息模板，区分 CISD 和 MACD 共振策略"""
-    
+
     # Alert 类型常量 - CISD 策略
     TYPE_SWING_HIGH_MITIGATION = "swing_high_mitigation"
     TYPE_SWING_LOW_MITIGATION = "swing_low_mitigation"
@@ -13,7 +13,7 @@ class AlertMessages:
     TYPE_BULLISH_NORMAL_CISD = "bullish_normal_cisd"
     TYPE_BEARISH_STRONG_CISD = "bearish_strong_cisd"
     TYPE_BULLISH_STRONG_CISD = "bullish_strong_cisd"
-    
+
     # ==================== CISD 策略 ====================
     @staticmethod
     def swing_high_mitigation(symbol: str, price: float, level: float) -> str:
@@ -24,7 +24,7 @@ class AlertMessages:
             f"💰 当前价: `{price:.2f}`\n"
             f"🎯 阻力位: `{level:.2f}`\n"
         )
-    
+
     @staticmethod
     def swing_low_mitigation(symbol: str, price: float, level: float) -> str:
         """Swing Low Mitigation - 下方支撑位被触及"""
@@ -34,7 +34,7 @@ class AlertMessages:
             f"💰 当前价: `{price:.2f}`\n"
             f"🎯 支撑位: `{level:.2f}`\n"
         )
-    
+
     @staticmethod
     def bearish_normal_cisd(symbol: str, price: float, origin_level: float) -> str:
         """Bearish Normal CISD - 普通看跌 CISD 信号"""
@@ -45,7 +45,7 @@ class AlertMessages:
             f"🎯 起点价位: `{origin_level:.2f}`\n"
             f"📝 说明: 看跌结构确认，可能继续下跌"
         )
-    
+
     @staticmethod
     def bullish_normal_cisd(symbol: str, price: float, origin_level: float) -> str:
         """Bullish Normal CISD - 普通看涨 CISD 信号"""
@@ -56,9 +56,15 @@ class AlertMessages:
             f"🎯 起点价位: `{origin_level:.2f}`\n"
             f"📝 说明: 看涨结构确认，可能继续上涨"
         )
-    
+
     @staticmethod
-    def bearish_strong_cisd(symbol: str, price: float, origin_level: float, sweep_level: float, bars_since: int) -> str:
+    def bearish_strong_cisd(
+        symbol: str,
+        price: float,
+        origin_level: float,
+        sweep_level: float,
+        bars_since: int,
+    ) -> str:
         """Strong Bearish CISD - 带流动性扫单的强看跌 CISD 信号"""
         return (
             f"🔻🔻 **强看跌 CISD 信号**\n"
@@ -68,9 +74,15 @@ class AlertMessages:
             f"💥 扫单价位: `{sweep_level:.2f}` ({bars_since} 根K线内)\n"
             f"📝 说明: 扫除上方流动性后反转下跌，高概率做空信号"
         )
-    
+
     @staticmethod
-    def bullish_strong_cisd(symbol: str, price: float, origin_level: float, sweep_level: float, bars_since: int) -> str:
+    def bullish_strong_cisd(
+        symbol: str,
+        price: float,
+        origin_level: float,
+        sweep_level: float,
+        bars_since: int,
+    ) -> str:
         """Strong Bullish CISD - 带流动性扫单的强看涨 CISD 信号"""
         return (
             f"🔺🔺 **强看涨 CISD 信号**\n"
@@ -80,11 +92,14 @@ class AlertMessages:
             f"💥 扫单价位: `{sweep_level:.2f}` ({bars_since} 根K线内)\n"
             f"📝 说明: 扫除下方流动性后反转上涨，高概率做多信号"
         )
-    
+
     # ==================== MACD 共振策略 ====================
     TYPE_MACD_RESONANCE_GOLDEN = "macd_resonance_golden"
     TYPE_MACD_RESONANCE_DEATH = "macd_resonance_death"
-    
+
+    # ==================== MA5 策略 (A股专属) ====================
+    TYPE_BELOW_MA5 = "below_ma5"
+
     @staticmethod
     def _get_slope_grade_desc(grade: int) -> str:
         """
@@ -103,7 +118,7 @@ class AlertMessages:
             5: "⚡ 五级（很强）",
         }
         return grade_map.get(grade, "❓ 未知")
-    
+
     @staticmethod
     def _get_zero_position_desc(zero_pos: str, is_golden: bool) -> str:
         """
@@ -112,12 +127,12 @@ class AlertMessages:
         死叉：零轴上方=左侧做空信号，零轴下方=右侧做空信号
         """
         if is_golden:
-            if zero_pos == 'below':
+            if zero_pos == "below":
                 return "🔵 左侧信号（零轴下方金叉，底部反转）"
             else:
                 return "🟢 右侧信号（零轴上方金叉，趋势延续）"
         else:
-            if zero_pos == 'above':
+            if zero_pos == "above":
                 return "🔴 左侧信号（零轴上方死叉，顶部反转）"
             else:
                 return "🟠 右侧信号（零轴下方死叉，趋势延续）"
@@ -125,29 +140,29 @@ class AlertMessages:
     @staticmethod
     def macd_resonance_golden(symbol: str, price: float, info: dict) -> str:
         """MACD Resonance Golden Cross"""
-        hist_state = info.get('hist_color', 'GRAY')
+        hist_state = info.get("hist_color", "GRAY")
         emoji_map = {
             "AQUA": "🟢 动能强劲",
             "BLUE": "⚪️ 动能减弱",
             "RED": "🔴 动能反向增强",
-            "MAROON": "🟡 动能反向减弱"
+            "MAROON": "🟡 动能反向减弱",
         }
         state_str = emoji_map.get(hist_state, hist_state)
-        
+
         # 1h 快线倾斜角和分级
-        dif_angle_1h = info.get('dif_angle_1h', 0)
-        dif_slope_grade_1h = info.get('dif_slope_grade_1h', 0)
+        dif_angle_1h = info.get("dif_angle_1h", 0)
+        dif_slope_grade_1h = info.get("dif_slope_grade_1h", 0)
         grade_desc_1h = AlertMessages._get_slope_grade_desc(dif_slope_grade_1h)
         angle_emoji = "📈" if dif_angle_1h > 0 else "📉"
-        
+
         # 零轴位置
-        zero_pos_1h = info.get('zero_pos_1h', 'unknown')
-        zero_pos_4h = info.get('zero_pos_4h', 'unknown')
+        zero_pos_1h = info.get("zero_pos_1h", "unknown")
+        zero_pos_4h = info.get("zero_pos_4h", "unknown")
         pos_desc_1h = AlertMessages._get_zero_position_desc(zero_pos_1h, True)
         pos_desc_4h = AlertMessages._get_zero_position_desc(zero_pos_4h, True)
-        
+
         # 时间间隔
-        time_gap = info.get('cross_time_gap_hours')
+        time_gap = info.get("cross_time_gap_hours")
         if time_gap is not None:
             if time_gap < 1:
                 time_gap_str = f"{int(time_gap * 60)} 分钟"
@@ -155,7 +170,7 @@ class AlertMessages:
                 time_gap_str = f"{time_gap:.1f} 小时"
         else:
             time_gap_str = "未知"
-        
+
         return (
             f"🚀 **MACD 1h/4h 共振金叉**\n"
             f"📍 标的: `{symbol}`\n"
@@ -177,29 +192,29 @@ class AlertMessages:
     @staticmethod
     def macd_resonance_death(symbol: str, price: float, info: dict) -> str:
         """MACD Resonance Death Cross"""
-        hist_state = info.get('hist_color', 'GRAY')
+        hist_state = info.get("hist_color", "GRAY")
         emoji_map = {
             "AQUA": "🟢 动能反向强劲",
             "BLUE": "⚪️ 动能反向减弱",
             "RED": "🔴 动能强劲",
-            "MAROON": "🟡 动能减弱"
+            "MAROON": "🟡 动能减弱",
         }
         state_str = emoji_map.get(hist_state, hist_state)
-        
+
         # 1h 快线倾斜角和分级
-        dif_angle_1h = info.get('dif_angle_1h', 0)
-        dif_slope_grade_1h = info.get('dif_slope_grade_1h', 0)
+        dif_angle_1h = info.get("dif_angle_1h", 0)
+        dif_slope_grade_1h = info.get("dif_slope_grade_1h", 0)
         grade_desc_1h = AlertMessages._get_slope_grade_desc(dif_slope_grade_1h)
         angle_emoji = "📈" if dif_angle_1h > 0 else "📉"
-        
+
         # 零轴位置
-        zero_pos_1h = info.get('zero_pos_1h', 'unknown')
-        zero_pos_4h = info.get('zero_pos_4h', 'unknown')
+        zero_pos_1h = info.get("zero_pos_1h", "unknown")
+        zero_pos_4h = info.get("zero_pos_4h", "unknown")
         pos_desc_1h = AlertMessages._get_zero_position_desc(zero_pos_1h, False)
         pos_desc_4h = AlertMessages._get_zero_position_desc(zero_pos_4h, False)
-        
+
         # 时间间隔
-        time_gap = info.get('cross_time_gap_hours')
+        time_gap = info.get("cross_time_gap_hours")
         if time_gap is not None:
             if time_gap < 1:
                 time_gap_str = f"{int(time_gap * 60)} 分钟"
@@ -207,7 +222,7 @@ class AlertMessages:
                 time_gap_str = f"{time_gap:.1f} 小时"
         else:
             time_gap_str = "未知"
-        
+
         return (
             f"📉 **MACD 1h/4h 共振死叉**\n"
             f"📍 标的: `{symbol}`\n"
@@ -224,4 +239,15 @@ class AlertMessages:
             f"\n"
             f"⏱ **交叉时间间隔:** {time_gap_str}\n"
             f"📝 说明: 1h 与 4h 周期趋势空头共振"
+        )
+
+    @staticmethod
+    def below_ma5(symbol: str, price: float, ma5: float) -> str:
+        diff_pct = (price - ma5) / ma5 * 100
+        return (
+            f"⚠️ **跌破5日均线**\n"
+            f"📍 标的: `{symbol}`\n"
+            f"💰 当前价: `{price:.2f}`\n"
+            f"📊 MA5: `{ma5:.2f}`\n"
+            f"📉 偏离: `{diff_pct:.2f}%`"
         )
