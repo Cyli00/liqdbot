@@ -26,6 +26,10 @@ from .config import (
     ASHARE_LTF_TIMEFRAME,
     ASHARE_LOWER_TIMEFRAME,
     ASHARE_MA_PERIOD,
+    SR_BREAKOUT_SYMBOLS,
+    RVOL_N_CRYPTO,
+    RVOL_N_ASHARE,
+    RVOL_THRESHOLD,
 )
 from .state import SymbolState
 from .alerts import AlertMessages
@@ -1097,7 +1101,9 @@ class StrategyEngine:
 
         return None, None
 
-    def analyze_market(self, symbol: str, state: SymbolState, df, htf_df=None):
+    def analyze_market(
+        self, symbol: str, state: SymbolState, df, htf_df=None, lower_df=None
+    ):
         """分析指定标的的市场状况"""
         if df is None or df.empty:
             return None
@@ -1298,6 +1304,14 @@ class StrategyEngine:
         nearest_res = min([x for x in active_highs if x > current_price], default=None)
         nearest_sup = max([x for x in active_lows if x < current_price], default=None)
 
+        sr_break_alert = self.check_sr_breakout_vol(
+            symbol, state, lower_df, nearest_res, nearest_sup
+        )
+        if sr_break_alert is not None:
+            msgs.append(sr_break_alert)
+
+        rvol_15m = self._compute_current_rvol(symbol, lower_df)
+
         result = {
             "symbol": symbol,
             "price": current_price,
@@ -1307,6 +1321,7 @@ class StrategyEngine:
             "nearest_sup": nearest_sup,
             "alerts": msgs,
             "last_bar_idx": last_idx,
+            "rvol_15m": rvol_15m,
         }
         state.last_analysis = result
         return result
@@ -1341,6 +1356,92 @@ class StrategyEngine:
                     AlertMessages.TYPE_BELOW_MA5,
                     AlertMessages.below_ma5(symbol, close_price, ma5_value),
                 )
+
+        return None
+
+    def _compute_current_rvol(self, symbol: str, lower_df) -> float | None:
+        if symbol not in SR_BREAKOUT_SYMBOLS:
+            return None
+        if lower_df is None or len(lower_df) < 3:
+            return None
+
+        market_type = detect_market_type(symbol)
+        rvol_n = RVOL_N_ASHARE if market_type == MarketType.A_SHARE else RVOL_N_CRYPTO
+
+        if len(lower_df) < rvol_n + 2:
+            return None
+
+        ldf = lower_df.copy()
+        ldf["vol_sma"] = ldf["volume"].rolling(rvol_n).mean()
+        last_bar = ldf.iloc[-2]
+        vol_sma = last_bar["vol_sma"]
+        if pd.isna(vol_sma) or vol_sma == 0:
+            return None
+        return last_bar["volume"] / vol_sma
+
+    def check_sr_breakout_vol(
+        self,
+        symbol: str,
+        state: SymbolState,
+        lower_df,
+        nearest_res: float | None,
+        nearest_sup: float | None,
+    ):
+        if symbol not in SR_BREAKOUT_SYMBOLS:
+            return None
+
+        if lower_df is None or len(lower_df) < 3:
+            return None
+
+        market_type = detect_market_type(symbol)
+        rvol_n = RVOL_N_ASHARE if market_type == MarketType.A_SHARE else RVOL_N_CRYPTO
+
+        if len(lower_df) < rvol_n + 2:
+            return None
+
+        ldf = lower_df.copy()
+        ldf["vol_sma"] = ldf["volume"].rolling(rvol_n).mean()
+
+        prev_bar = ldf.iloc[-2]
+        curr_bar = ldf.iloc[-3]
+
+        prev_close = prev_bar["close"]
+        curr_close = curr_bar["close"]
+        bar_vol = prev_bar["volume"]
+        vol_sma = prev_bar["vol_sma"]
+        bar_ts = prev_bar["timestamp"]
+
+        if pd.isna(vol_sma) or vol_sma == 0:
+            return None
+
+        rvol = bar_vol / vol_sma
+
+        if (
+            state.last_sr_break_15m_ts is not None
+            and bar_ts <= state.last_sr_break_15m_ts
+        ):
+            return None
+
+        if rvol < RVOL_THRESHOLD:
+            return None
+
+        if nearest_res is not None and curr_close <= nearest_res < prev_close:
+            state.last_sr_break_15m_ts = bar_ts
+            return (
+                AlertMessages.TYPE_BREAKOUT_RESISTANCE_VOL,
+                AlertMessages.breakout_resistance_vol(
+                    symbol, prev_close, nearest_res, rvol
+                ),
+            )
+
+        if nearest_sup is not None and curr_close >= nearest_sup > prev_close:
+            state.last_sr_break_15m_ts = bar_ts
+            return (
+                AlertMessages.TYPE_BREAKDOWN_SUPPORT_VOL,
+                AlertMessages.breakdown_support_vol(
+                    symbol, prev_close, nearest_sup, rvol
+                ),
+            )
 
         return None
 

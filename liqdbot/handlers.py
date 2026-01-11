@@ -211,7 +211,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             continue
 
         df = engine.calculate_indicators(df, lower_df)
-        res = engine.analyze_market(symbol, state, df, htf_df)
+        res = engine.analyze_market(symbol, state, df, htf_df, lower_df)
         if not res:
             all_msgs.append(f"❌ {symbol}: 分析失败")
             continue
@@ -223,6 +223,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = f"📊 **{res['symbol']}** | `{res['price']:.2f}`\n"
         msg += f"⬆️ 上方阻力: {res_txt}\n"
         msg += f"⬇️ 下方支撑: {sup_txt}\n"
+
+        if res.get("rvol_15m") is not None:
+            msg += f"📊 15m RVOL: `{res['rvol_15m']:.2f}x`\n"
 
         if res["alerts"]:
             msg += f"📢 触发: {len(res['alerts'])} 条信号\n"

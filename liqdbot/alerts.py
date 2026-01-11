@@ -100,6 +100,34 @@ class AlertMessages:
     # ==================== MA5 策略 (A股专属) ====================
     TYPE_BELOW_MA5 = "below_ma5"
 
+    # ==================== 15m 放量突破/跌破 ====================
+    TYPE_BREAKOUT_RESISTANCE_VOL = "breakout_resistance_vol"
+    TYPE_BREAKDOWN_SUPPORT_VOL = "breakdown_support_vol"
+
+    @staticmethod
+    def breakout_resistance_vol(
+        symbol: str, price: float, level: float, rvol: float
+    ) -> str:
+        return (
+            f"🚀 **放量突破阻力位** (15m)\n"
+            f"📍 标的: `{symbol}`\n"
+            f"💰 收盘价: `{price:.2f}`\n"
+            f"🎯 阻力位: `{level:.2f}`\n"
+            f"📊 RVOL: `{rvol:.2f}x`"
+        )
+
+    @staticmethod
+    def breakdown_support_vol(
+        symbol: str, price: float, level: float, rvol: float
+    ) -> str:
+        return (
+            f"⚠️ **放量跌破支撑位** (15m)\n"
+            f"📍 标的: `{symbol}`\n"
+            f"💰 收盘价: `{price:.2f}`\n"
+            f"🎯 支撑位: `{level:.2f}`\n"
+            f"📊 RVOL: `{rvol:.2f}x`"
+        )
+
     @staticmethod
     def _get_slope_grade_desc(grade: int) -> str:
         """

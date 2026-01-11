@@ -114,7 +114,7 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
 
         try:
             df = engine.calculate_indicators(df, lower_df)
-            res = engine.analyze_market(symbol, state, df, htf_df)
+            res = engine.analyze_market(symbol, state, df, htf_df, lower_df)
         except Exception as e:
             logging.error(f"分析 {symbol} 市场数据失败: {e}")
             continue

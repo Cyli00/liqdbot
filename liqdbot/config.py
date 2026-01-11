@@ -62,3 +62,11 @@ ASHARE_HTF_TIMEFRAME = "60m"  # MACD 共振高周期
 ASHARE_LTF_TIMEFRAME = "15m"  # MACD 共振低周期
 ASHARE_LOWER_TIMEFRAME = "15m"  # 上下行量计算
 ASHARE_MA_PERIOD = 5  # 5日均线
+
+# --- 15m 放量突破/跌破配置 ---
+# 仅对以下标的启用（规范化后匹配）
+SR_BREAKOUT_SYMBOLS = {"BTC/USDT", "sh000001"}
+# RVOL = vol / SMA(vol, N)，N 按标的分别设定
+RVOL_N_CRYPTO = int(os.getenv("RVOL_N_CRYPTO", "96"))  # BTC: 96 根 15m ≈ 24h
+RVOL_N_ASHARE = int(os.getenv("RVOL_N_ASHARE", "48"))  # 上证: 48 根 15m ≈ 3 个交易日
+RVOL_THRESHOLD = float(os.getenv("RVOL_THRESHOLD", "2.0"))  # 放量阈值
