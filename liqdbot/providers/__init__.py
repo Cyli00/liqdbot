@@ -4,13 +4,13 @@
 
 from .base import DataProvider, MarketType, detect_market_type
 from .crypto import CryptoProvider
-from .ashare import AShareProvider, is_ashare_trading_time
+from .akshare import AkshareProvider, is_akshare_trading_time
 
 __all__ = [
     "DataProvider",
     "MarketType",
     "detect_market_type",
     "CryptoProvider",
-    "AShareProvider",
-    "is_ashare_trading_time",
+    "AkshareProvider",
+    "is_akshare_trading_time",
 ]

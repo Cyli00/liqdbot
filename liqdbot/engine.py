@@ -33,7 +33,7 @@ from .config import (
 )
 from .state import SymbolState
 from .alerts import AlertMessages
-from .providers import MarketType, detect_market_type, CryptoProvider, AShareProvider
+from .providers import MarketType, detect_market_type, CryptoProvider, AkshareProvider
 
 
 class StrategyEngine:
@@ -41,7 +41,7 @@ class StrategyEngine:
 
     def __init__(self):
         self.crypto_provider = CryptoProvider()
-        self.ashare_provider = AShareProvider()
+        self.akshare_provider = AkshareProvider()
 
         # 多标的监控: {symbol: SymbolState}
         self.symbols: dict[str, SymbolState] = {}
@@ -102,7 +102,7 @@ class StrategyEngine:
     def get_provider_for_symbol(self, symbol: str):
         market_type = detect_market_type(symbol)
         if market_type == MarketType.A_SHARE:
-            return self.ashare_provider
+            return self.akshare_provider
         return self.crypto_provider
 
     def get_timeframes_for_symbol(self, symbol: str) -> dict:

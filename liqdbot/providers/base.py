@@ -5,7 +5,7 @@ import pandas as pd
 
 class MarketType(Enum):
     CRYPTO = "crypto"
-    A_SHARE = "ashare"
+    A_SHARE = "akshare"
 
 
 def detect_market_type(symbol: str) -> MarketType:

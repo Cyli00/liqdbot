@@ -22,8 +22,7 @@ TIMEFRAME_MAP = {
 }
 
 
-def is_ashare_trading_time() -> bool:
-    """判断当前是否为A股交易时段（北京时间 9:30-11:30, 13:00-15:00，周一至周五）"""
+def is_akshare_trading_time() -> bool:
     now = datetime.now(SHANGHAI_TZ)
 
     if now.weekday() >= 5:
@@ -39,7 +38,7 @@ def is_ashare_trading_time() -> bool:
     )
 
 
-class AShareProvider(DataProvider):
+class AkshareProvider(DataProvider):
     def __init__(self):
         self._ak = None
 
@@ -58,6 +57,15 @@ class AShareProvider(DataProvider):
             return symbol.split(".")[0]
         return symbol
 
+    def _is_index(self, symbol: str) -> bool:
+        symbol_lower = symbol.lower().strip()
+        code = self._extract_stock_code(symbol)
+        if symbol_lower.startswith("sh") and code.startswith("000"):
+            return True
+        if symbol_lower.startswith("sz") and code.startswith("399"):
+            return True
+        return False
+
     async def fetch_ohlcv(
         self, symbol: str, timeframe: str, limit: int
     ) -> pd.DataFrame | None:
@@ -68,20 +76,36 @@ class AShareProvider(DataProvider):
 
             loop = asyncio.get_running_loop()
 
+            is_index = self._is_index(symbol)
+
             if period in ("daily", "weekly", "monthly"):
-                df = await loop.run_in_executor(
-                    None,
-                    lambda: ak.stock_zh_a_hist(
-                        symbol=stock_code, period=period, adjust="qfq"
-                    ),
-                )
+                if is_index:
+                    df = await loop.run_in_executor(
+                        None,
+                        lambda: ak.index_zh_a_hist(symbol=stock_code, period=period),
+                    )
+                else:
+                    df = await loop.run_in_executor(
+                        None,
+                        lambda: ak.stock_zh_a_hist(
+                            symbol=stock_code, period=period, adjust="qfq"
+                        ),
+                    )
             else:
-                df = await loop.run_in_executor(
-                    None,
-                    lambda: ak.stock_zh_a_hist_min_em(
-                        symbol=stock_code, period=period, adjust="qfq"
-                    ),
-                )
+                if is_index:
+                    df = await loop.run_in_executor(
+                        None,
+                        lambda: ak.index_zh_a_hist_min_em(
+                            symbol=stock_code, period=period
+                        ),
+                    )
+                else:
+                    df = await loop.run_in_executor(
+                        None,
+                        lambda: ak.stock_zh_a_hist_min_em(
+                            symbol=stock_code, period=period, adjust="qfq"
+                        ),
+                    )
 
             if df is None or df.empty:
                 return None
@@ -123,7 +147,7 @@ class AShareProvider(DataProvider):
             return df[required_cols].reset_index(drop=True)
 
         except Exception as e:
-            logging.error(f"AShareProvider fetch_ohlcv error for {symbol}: {e}")
+            logging.error(f"AkshareProvider fetch_ohlcv error for {symbol}: {e}")
             return None
 
     async def validate_symbol(self, symbol: str) -> bool:
@@ -131,7 +155,7 @@ class AShareProvider(DataProvider):
             df = await self.fetch_ohlcv(symbol, "1d", 1)
             return df is not None and not df.empty
         except Exception as e:
-            logging.warning(f"AShareProvider validate_symbol failed for {symbol}: {e}")
+            logging.warning(f"AkshareProvider validate_symbol failed for {symbol}: {e}")
             return False
 
     @staticmethod

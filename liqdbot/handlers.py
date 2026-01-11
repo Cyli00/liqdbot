@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 
 from .engine import engine
 from .config import TG_CHAT_ID
-from .providers import MarketType, detect_market_type, CryptoProvider, AShareProvider
+from .providers import MarketType, detect_market_type, CryptoProvider, AkshareProvider
 
 
 async def add_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -31,7 +31,7 @@ async def add_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     market_type = detect_market_type(raw_symbol)
 
     if market_type == MarketType.A_SHARE:
-        new_symbol = AShareProvider.normalize_symbol(raw_symbol)
+        new_symbol = AkshareProvider.normalize_symbol(raw_symbol)
         market_label = "🇨🇳 A股"
     else:
         new_symbol = CryptoProvider.normalize_symbol(raw_symbol)

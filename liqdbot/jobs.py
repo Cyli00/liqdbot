@@ -10,7 +10,7 @@ from telegram.error import NetworkError, TimedOut, RetryAfter
 
 from .engine import engine
 from .config import TG_CHAT_ID, MAX_RETRIES, RETRY_DELAY
-from .providers import MarketType, detect_market_type, is_ashare_trading_time
+from .providers import MarketType, detect_market_type, is_akshare_trading_time
 
 
 # 并行获取数据的最大并发数（避免API限速）
@@ -74,13 +74,13 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
     if not all_symbols:
         return
 
-    ashare_trading = is_ashare_trading_time()
+    akshare_trading = is_akshare_trading_time()
 
     symbols_to_process = []
     for sym in all_symbols:
         market_type = detect_market_type(sym)
         if market_type == MarketType.A_SHARE:
-            if ashare_trading:
+            if akshare_trading:
                 symbols_to_process.append(sym)
         else:
             symbols_to_process.append(sym)
