@@ -183,6 +183,9 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
             "total_ms": 0,
         }
 
+        market_type = detect_market_type(symbol)
+        icon = "🇨🇳" if market_type == MarketType.A_SHARE else "🪙"
+
         try:
             fetch_start = time.perf_counter_ns() // 1_000_000
             df, lower_df, htf_df = await engine.fetch_data(symbol)
@@ -213,6 +216,10 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
             if not res:
                 result["msg"] = f"❌ **{symbol}** 分析失败"
                 return result
+
+            res_val = f"`{res['nearest_res']:.2f}`" if res["nearest_res"] else "None"
+            sup_val = f"`{res['nearest_sup']:.2f}`" if res["nearest_sup"] else "None"
+            price_str = f"{res['price']:,.2f}"
 
             msg = f"{icon} **{res['symbol']}** `{price_str}`\n"
             msg += f"📈 {res_val} | 📉 {sup_val}\n"
