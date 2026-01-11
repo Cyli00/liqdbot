@@ -1,26 +1,23 @@
-"""
-定时任务模块 - 处理自动监控任务和消息发送
-"""
-
 import asyncio
 import logging
+import time
+import uuid
 from typing import Any
 from telegram.ext import ContextTypes
 from telegram.error import NetworkError, TimedOut, RetryAfter
 
 from .engine import engine
-from .config import TG_CHAT_ID, MAX_RETRIES, RETRY_DELAY
+from .config import TG_CHAT_ID, MAX_RETRIES, RETRY_DELAY, SLOW_THRESHOLD_MS
 from .providers import MarketType, detect_market_type, is_akshare_trading_time
 
+logger = logging.getLogger(__name__)
 
-# 并行获取数据的最大并发数（避免API限速）
 MAX_CONCURRENT_FETCHES = 4
 
 
 async def send_telegram_with_retry(
     bot, chat_id: int, text: str, max_retries: int = MAX_RETRIES
 ) -> bool:
-    """带重试机制的 Telegram 消息发送"""
     for attempt in range(max_retries):
         try:
             await bot.send_message(
@@ -33,42 +30,58 @@ async def send_telegram_with_retry(
             )
             return True
         except RetryAfter as e:
-            logging.warning(f"Telegram 限速，等待 {e.retry_after} 秒...")
+            logger.warning(f"event=telegram_rate_limit retry_after={e.retry_after}")
             await asyncio.sleep(e.retry_after)
         except (NetworkError, TimedOut) as e:
             if attempt < max_retries - 1:
                 wait_time = RETRY_DELAY * (attempt + 1)
-                logging.warning(
-                    f"网络错误，{wait_time}秒后重试 ({attempt + 1}/{max_retries}): {e}"
+                logger.warning(
+                    f"event=telegram_network_error attempt={attempt + 1}/{max_retries} "
+                    f"wait={wait_time}s err={e}"
                 )
                 await asyncio.sleep(wait_time)
             else:
-                logging.error(f"发送失败，已达最大重试次数: {e}")
+                logger.error(f"event=telegram_send_fail max_retries_reached err={e}")
                 return False
         except Exception as e:
-            logging.error(f"发送消息时发生未知错误: {e}")
+            logger.exception(f"event=telegram_send_error err={e}")
             return False
     return False
 
 
 async def fetch_symbol_data(symbol: str) -> tuple[str, Any, Any, Any]:
-    """获取单个标的的数据，返回 (symbol, df, lower_df, htf_df)"""
+    start_ms = time.perf_counter_ns() // 1_000_000
     try:
         df, lower_df, htf_df = await engine.fetch_data(symbol)
+        duration_ms = (time.perf_counter_ns() // 1_000_000) - start_ms
+
+        market_type = detect_market_type(symbol)
+        provider = "akshare" if market_type == MarketType.A_SHARE else "binance"
+
+        if duration_ms > SLOW_THRESHOLD_MS:
+            logger.warning(
+                f"event=job_fetch_slow symbol={symbol} provider={provider} "
+                f"duration_ms={duration_ms}"
+            )
+        else:
+            logger.debug(
+                f"event=job_fetch_done symbol={symbol} provider={provider} "
+                f"duration_ms={duration_ms}"
+            )
+
         return (symbol, df, lower_df, htf_df)
     except Exception as e:
-        logging.error(f"获取 {symbol} 数据失败: {e}")
+        duration_ms = (time.perf_counter_ns() // 1_000_000) - start_ms
+        logger.exception(
+            f"event=job_fetch_error symbol={symbol} duration_ms={duration_ms} err={e}"
+        )
         return (symbol, None, None, None)
 
 
 async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
-    """
-    自动任务：每分钟运行，并行获取数据，顺序处理分析和发送
-    - 数据获取：并行（使用信号量控制并发数）
-    - 指标计算和分析：顺序（CPU密集型）
-    - Alert发送：顺序（避免Telegram限速）
-    - A股：仅在交易时段执行
-    """
+    run_id = str(uuid.uuid4())[:8]
+    job_start_ms = time.perf_counter_ns() // 1_000_000
+
     all_symbols = engine.get_all_symbols()
 
     if not all_symbols:
@@ -86,8 +99,18 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
             symbols_to_process.append(sym)
 
     if not symbols_to_process:
+        logger.debug(
+            f"event=market_job_skip run={run_id} reason=no_symbols_to_process "
+            f"akshare_trading={akshare_trading}"
+        )
         return
 
+    logger.info(
+        f"event=market_job_start run={run_id} symbols_total={len(all_symbols)} "
+        f"symbols_process={len(symbols_to_process)} akshare_trading={akshare_trading}"
+    )
+
+    fetch_start_ms = time.perf_counter_ns() // 1_000_000
     semaphore = asyncio.Semaphore(MAX_CONCURRENT_FETCHES)
 
     async def fetch_with_semaphore(symbol: str):
@@ -97,11 +120,24 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
     fetch_tasks = [fetch_with_semaphore(sym) for sym in symbols_to_process]
     results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
 
+    fetch_duration_ms = (time.perf_counter_ns() // 1_000_000) - fetch_start_ms
+    fetch_ok = sum(
+        1 for r in results if not isinstance(r, Exception) and r[1] is not None
+    )
+    fetch_fail = len(results) - fetch_ok
+
+    logger.info(
+        f"event=market_fetch_done run={run_id} ok={fetch_ok} fail={fetch_fail} "
+        f"duration_ms={fetch_duration_ms}"
+    )
+
+    analyze_start_ms = time.perf_counter_ns() // 1_000_000
     all_alerts = []
+    cooldown_skipped = 0
 
     for result in results:
         if isinstance(result, Exception):
-            logging.error(f"获取数据时发生异常: {result}")
+            logger.error(f"event=market_job_exception run={run_id} err={result}")
             continue
 
         symbol, df, lower_df, htf_df = result
@@ -116,7 +152,9 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
             df = engine.calculate_indicators(df, lower_df)
             res = engine.analyze_market(symbol, state, df, htf_df, lower_df)
         except Exception as e:
-            logging.error(f"分析 {symbol} 市场数据失败: {e}")
+            logger.exception(
+                f"event=market_analyze_error run={run_id} symbol={symbol} err={e}"
+            )
             continue
 
         if res and res["alerts"]:
@@ -124,14 +162,45 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
                 if state.can_send_alert(alert_type):
                     all_alerts.append((state, alert_type, alert_msg))
                 else:
-                    logging.info(
-                        f"[{symbol}] Alert {alert_type} 在冷却期内或强度不足，跳过发送"
+                    cooldown_skipped += 1
+                    logger.debug(
+                        f"event=alert_cooldown_skip run={run_id} symbol={symbol} "
+                        f"alert_type={alert_type}"
                     )
+
+    analyze_duration_ms = (time.perf_counter_ns() // 1_000_000) - analyze_start_ms
+
+    logger.info(
+        f"event=market_analyze_done run={run_id} alerts={len(all_alerts)} "
+        f"cooldown_skipped={cooldown_skipped} duration_ms={analyze_duration_ms}"
+    )
+
+    send_start_ms = time.perf_counter_ns() // 1_000_000
+    sent_ok = 0
+    sent_fail = 0
 
     for state, alert_type, alert_msg in all_alerts:
         success = await send_telegram_with_retry(context.bot, TG_CHAT_ID, alert_msg)
         if success:
             state.mark_alert_sent(alert_type)
+            sent_ok += 1
             await asyncio.sleep(1)
         else:
+            sent_fail += 1
             await asyncio.sleep(5)
+
+    send_duration_ms = (time.perf_counter_ns() // 1_000_000) - send_start_ms
+
+    if all_alerts:
+        logger.info(
+            f"event=market_send_done run={run_id} sent={sent_ok} fail={sent_fail} "
+            f"duration_ms={send_duration_ms}"
+        )
+
+    job_duration_ms = (time.perf_counter_ns() // 1_000_000) - job_start_ms
+
+    logger.info(
+        f"event=market_job_done run={run_id} total_ms={job_duration_ms} "
+        f"fetch_ms={fetch_duration_ms} analyze_ms={analyze_duration_ms} "
+        f"send_ms={send_duration_ms}"
+    )

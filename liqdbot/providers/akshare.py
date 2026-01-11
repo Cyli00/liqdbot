@@ -1,11 +1,15 @@
 import asyncio
 import logging
-from datetime import datetime, time
+import re
+import time
+from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 import pandas as pd
 
 from .base import DataProvider
+from ..config import SLOW_THRESHOLD_MS, AKSHARE_CACHE_TTL_S
 
+logger = logging.getLogger(__name__)
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 TIMEFRAME_MAP = {
@@ -29,8 +33,8 @@ def is_akshare_trading_time() -> bool:
         return False
 
     current_time = now.time()
-    morning_session = (time(9, 30), time(11, 30))
-    afternoon_session = (time(13, 0), time(15, 0))
+    morning_session = (dt_time(9, 30), dt_time(11, 30))
+    afternoon_session = (dt_time(13, 0), dt_time(15, 0))
 
     return (
         morning_session[0] <= current_time <= morning_session[1]
@@ -38,9 +42,35 @@ def is_akshare_trading_time() -> bool:
     )
 
 
+def _timeframe_to_seconds(tf: str) -> int:
+    m = re.match(r"(?i)(\d+)([smhdw])", tf)
+    if not m:
+        return 3600
+    value = int(m.group(1))
+    unit = m.group(2).lower()
+    if unit == "s":
+        return value
+    if unit == "m":
+        return value * 60
+    if unit == "h":
+        return value * 3600
+    if unit == "d":
+        return value * 86400
+    if unit == "w":
+        return value * 604800
+    return 3600
+
+
+def _get_current_bar_open_ts(tf: str) -> float:
+    bar_seconds = _timeframe_to_seconds(tf)
+    now_ts = time.time()
+    return (now_ts // bar_seconds) * bar_seconds
+
+
 class AkshareProvider(DataProvider):
     def __init__(self):
         self._ak = None
+        self._cache: dict[tuple[str, str], tuple[pd.DataFrame, float, float]] = {}
 
     def _get_akshare(self):
         if self._ak is None:
@@ -66,9 +96,42 @@ class AkshareProvider(DataProvider):
             return True
         return False
 
+    def _should_use_cache(
+        self, symbol: str, timeframe: str
+    ) -> tuple[bool, pd.DataFrame | None, str]:
+        cache_key = (symbol, timeframe)
+        if cache_key not in self._cache:
+            return False, None, "no_cache"
+
+        cached_df, cached_at, cached_bar_open = self._cache[cache_key]
+        current_bar_open = _get_current_bar_open_ts(timeframe)
+        now = time.time()
+
+        if now - cached_at > AKSHARE_CACHE_TTL_S:
+            return False, None, "ttl_expired"
+
+        if current_bar_open > cached_bar_open:
+            return False, None, "new_bar"
+
+        return True, cached_df, "cache_hit"
+
+    def _update_cache(self, symbol: str, timeframe: str, df: pd.DataFrame) -> None:
+        cache_key = (symbol, timeframe)
+        current_bar_open = _get_current_bar_open_ts(timeframe)
+        self._cache[cache_key] = (df.copy(), time.time(), current_bar_open)
+
     async def fetch_ohlcv(
         self, symbol: str, timeframe: str, limit: int
     ) -> pd.DataFrame | None:
+        use_cache, cached_df, cache_reason = self._should_use_cache(symbol, timeframe)
+        if use_cache and cached_df is not None:
+            logger.debug(
+                f"event=fetch_ohlcv_cache provider=akshare symbol={symbol} "
+                f"tf={timeframe} reason={cache_reason} rows={len(cached_df)}"
+            )
+            return cached_df.tail(limit).reset_index(drop=True)
+
+        start_ms = time.perf_counter_ns() // 1_000_000
         try:
             ak = self._get_akshare()
             period = TIMEFRAME_MAP.get(timeframe, timeframe)
@@ -108,6 +171,11 @@ class AkshareProvider(DataProvider):
                     )
 
             if df is None or df.empty:
+                duration_ms = (time.perf_counter_ns() // 1_000_000) - start_ms
+                logger.warning(
+                    f"event=fetch_ohlcv_empty provider=akshare symbol={symbol} "
+                    f"tf={timeframe} duration_ms={duration_ms}"
+                )
                 return None
 
             column_mapping = {
@@ -142,20 +210,45 @@ class AkshareProvider(DataProvider):
                 if col not in df.columns:
                     df[col] = 0
 
-            df = df.tail(limit)
+            full_df = df[required_cols].reset_index(drop=True)
 
-            return df[required_cols].reset_index(drop=True)
+            self._update_cache(symbol, timeframe, full_df)
+
+            result_df = full_df.tail(limit).reset_index(drop=True)
+            duration_ms = (time.perf_counter_ns() // 1_000_000) - start_ms
+            rows = len(result_df)
+
+            if duration_ms > SLOW_THRESHOLD_MS:
+                logger.warning(
+                    f"event=fetch_ohlcv_slow provider=akshare symbol={symbol} "
+                    f"tf={timeframe} limit={limit} duration_ms={duration_ms} "
+                    f"rows={rows} cache_reason={cache_reason}"
+                )
+            else:
+                logger.debug(
+                    f"event=fetch_ohlcv provider=akshare symbol={symbol} "
+                    f"tf={timeframe} limit={limit} duration_ms={duration_ms} "
+                    f"rows={rows} cache_reason={cache_reason}"
+                )
+
+            return result_df
 
         except Exception as e:
-            logging.error(f"AkshareProvider fetch_ohlcv error for {symbol}: {e}")
+            duration_ms = (time.perf_counter_ns() // 1_000_000) - start_ms
+            logger.exception(
+                f"event=fetch_ohlcv_error provider=akshare symbol={symbol} "
+                f"tf={timeframe} limit={limit} duration_ms={duration_ms} err={e}"
+            )
             return None
 
     async def validate_symbol(self, symbol: str) -> bool:
         try:
             df = await self.fetch_ohlcv(symbol, "1d", 1)
             return df is not None and not df.empty
-        except Exception as e:
-            logging.warning(f"AkshareProvider validate_symbol failed for {symbol}: {e}")
+        except Exception:
+            logger.exception(
+                f"event=validate_symbol_error provider=akshare symbol={symbol}"
+            )
             return False
 
     @staticmethod

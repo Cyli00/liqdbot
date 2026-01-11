@@ -3,19 +3,22 @@
 """
 
 import asyncio
+import logging
+import time
+import uuid
+from datetime import datetime, timezone
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from .engine import engine
-from .config import TG_CHAT_ID
+from .config import TG_CHAT_ID, STATUS_MAX_CONCURRENCY, SLOW_THRESHOLD_MS
 from .providers import MarketType, detect_market_type, CryptoProvider, AkshareProvider
+
+logger = logging.getLogger(__name__)
 
 
 async def add_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    指令: /add SOL 或 /add SOL/USDT 或 /add sh600519
-    添加新的监控标的（不会替换已有的）
-    """
     args = context.args
     if not args:
         await update.message.reply_text(
@@ -69,9 +72,6 @@ async def add_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def del_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    指令: /del SOL 或 /del （删除所有）
-    """
     args = context.args
     current_symbols = engine.get_all_symbols()
 
@@ -80,7 +80,6 @@ async def del_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     if not args:
-        # 无参数：显示当前列表并提示如何删除
         symbols_list = ", ".join([f"`{s}`" for s in current_symbols])
         await update.message.reply_text(
             f"📋 当前监控列表: {symbols_list}\n\n"
@@ -93,7 +92,6 @@ async def del_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     target = args[0].upper()
 
     if target == "ALL":
-        # 删除所有
         count = len(current_symbols)
         for sym in list(current_symbols):
             engine.remove_symbol(sym)
@@ -102,7 +100,6 @@ async def del_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode="Markdown",
         )
     else:
-        # 删除指定标的
         if "/" not in target:
             target = f"{target}/USDT"
 
@@ -126,9 +123,6 @@ async def del_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def list_symbols_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    指令: /list - 显示当前监控的所有标的
-    """
     current_symbols = engine.get_all_symbols()
 
     if not current_symbols:
@@ -155,11 +149,80 @@ async def list_symbols_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -> dict:
+    async with semaphore:
+        start_ms = time.perf_counter_ns() // 1_000_000
+        result = {
+            "symbol": symbol,
+            "ok": False,
+            "msg": "",
+            "updated_at": None,
+            "fetch_ms": 0,
+            "calc_ms": 0,
+            "analyze_ms": 0,
+            "total_ms": 0,
+        }
+
+        try:
+            fetch_start = time.perf_counter_ns() // 1_000_000
+            df, lower_df, htf_df = await engine.fetch_data(symbol)
+            result["fetch_ms"] = (time.perf_counter_ns() // 1_000_000) - fetch_start
+
+            if df is None:
+                result["msg"] = f"❌ {symbol}: 数据获取失败"
+                result["total_ms"] = (time.perf_counter_ns() // 1_000_000) - start_ms
+                return result
+
+            state = engine.get_state(symbol)
+            if state is None:
+                result["msg"] = f"❌ {symbol}: 状态不存在"
+                result["total_ms"] = (time.perf_counter_ns() // 1_000_000) - start_ms
+                return result
+
+            calc_start = time.perf_counter_ns() // 1_000_000
+            df = engine.calculate_indicators(df, lower_df)
+            result["calc_ms"] = (time.perf_counter_ns() // 1_000_000) - calc_start
+
+            analyze_start = time.perf_counter_ns() // 1_000_000
+            res = engine.analyze_market(symbol, state, df, htf_df, lower_df)
+            result["analyze_ms"] = (time.perf_counter_ns() // 1_000_000) - analyze_start
+
+            result["updated_at"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
+            result["total_ms"] = (time.perf_counter_ns() // 1_000_000) - start_ms
+
+            if not res:
+                result["msg"] = f"❌ {symbol}: 分析失败"
+                return result
+
+            res_txt = f"`{res['nearest_res']:.2f}`" if res["nearest_res"] else "无"
+            sup_txt = f"`{res['nearest_sup']:.2f}`" if res["nearest_sup"] else "无"
+
+            msg = f"📊 **{res['symbol']}** | `{res['price']:.2f}`\n"
+            msg += f"⬆️ 上方阻力: {res_txt}\n"
+            msg += f"⬇️ 下方支撑: {sup_txt}\n"
+
+            if res.get("rvol_15m") is not None:
+                msg += f"📊 15m RVOL: `{res['rvol_15m']:.2f}x`\n"
+
+            if res["alerts"]:
+                msg += f"📢 触发: {len(res['alerts'])} 条信号\n"
+
+            msg += f"🕐 更新: {result['updated_at']} ({result['total_ms']}ms)"
+
+            result["ok"] = True
+            result["msg"] = msg
+
+        except Exception as e:
+            result["total_ms"] = (time.perf_counter_ns() // 1_000_000) - start_ms
+            result["msg"] = f"❌ {symbol}: 异常 {e}"
+            logger.exception(
+                f"event=status_symbol_error req=status symbol={symbol} err={e}"
+            )
+
+        return result
+
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    手动查询：/status [symbol] [post]
-    例如: /status 或 /status BTC 或 /status BTC post
-    """
     symbols = engine.get_all_symbols()
 
     if not symbols:
@@ -172,18 +235,15 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_symbol = None
     should_post_to_channel = False
 
-    # 解析参数
     for arg in args:
         if arg.lower() == "post":
             should_post_to_channel = True
         else:
-            # 自动补全 /USDT
             if "/" not in arg.upper():
                 target_symbol = f"{arg.upper()}/USDT"
             else:
                 target_symbol = arg.upper()
 
-    # 如果指定了标的，只查询该标的
     if target_symbol:
         if target_symbol not in symbols:
             await update.message.reply_text(
@@ -194,46 +254,60 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         symbols_to_query = symbols
 
+    request_id = str(uuid.uuid4())[:8]
+    user_id = update.effective_user.id if update.effective_user else 0
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+
+    logger.info(
+        f"event=status_start req={request_id} user={user_id} chat={chat_id} "
+        f"symbols={len(symbols_to_query)} target={target_symbol or 'all'} post={should_post_to_channel}"
+    )
+
+    start_total_ms = time.perf_counter_ns() // 1_000_000
+
     loading_msg = await update.message.reply_text(
         f"🔄 正在分析 {len(symbols_to_query)} 个标的 (1H)..."
     )
 
+    semaphore = asyncio.Semaphore(STATUS_MAX_CONCURRENCY)
+    tasks = [_fetch_and_analyze_symbol(sym, semaphore) for sym in symbols_to_query]
+    results = await asyncio.gather(*tasks)
+
     all_msgs = []
+    ok_count = 0
+    fail_count = 0
+    slow_symbols = []
 
-    for symbol in symbols_to_query:
-        state = engine.get_state(symbol)
-        if state is None:
-            continue
+    for r in results:
+        all_msgs.append(r["msg"])
+        if r["ok"]:
+            ok_count += 1
+        else:
+            fail_count += 1
 
-        df, lower_df, htf_df = await engine.fetch_data(symbol)
-        if df is None:
-            all_msgs.append(f"❌ {symbol}: 数据获取失败")
-            continue
+        market_type = detect_market_type(r["symbol"])
+        provider = "akshare" if market_type == MarketType.A_SHARE else "binance"
 
-        df = engine.calculate_indicators(df, lower_df)
-        res = engine.analyze_market(symbol, state, df, htf_df, lower_df)
-        if not res:
-            all_msgs.append(f"❌ {symbol}: 分析失败")
-            continue
+        if r["total_ms"] > SLOW_THRESHOLD_MS:
+            slow_symbols.append(r["symbol"])
+            logger.warning(
+                f"event=status_symbol_slow req={request_id} symbol={r['symbol']} "
+                f"provider={provider} fetch_ms={r['fetch_ms']} calc_ms={r['calc_ms']} "
+                f"analyze_ms={r['analyze_ms']} total_ms={r['total_ms']}"
+            )
+        else:
+            logger.debug(
+                f"event=status_symbol_done req={request_id} symbol={r['symbol']} "
+                f"provider={provider} fetch_ms={r['fetch_ms']} calc_ms={r['calc_ms']} "
+                f"analyze_ms={r['analyze_ms']} total_ms={r['total_ms']}"
+            )
 
-        # 格式化输出
-        res_txt = f"`{res['nearest_res']:.2f}`" if res["nearest_res"] else "无"
-        sup_txt = f"`{res['nearest_sup']:.2f}`" if res["nearest_sup"] else "无"
+    total_ms = (time.perf_counter_ns() // 1_000_000) - start_total_ms
 
-        msg = f"📊 **{res['symbol']}** | `{res['price']:.2f}`\n"
-        msg += f"⬆️ 上方阻力: {res_txt}\n"
-        msg += f"⬇️ 下方支撑: {sup_txt}\n"
-
-        if res.get("rvol_15m") is not None:
-            msg += f"📊 15m RVOL: `{res['rvol_15m']:.2f}x`\n"
-
-        if res["alerts"]:
-            msg += f"📢 触发: {len(res['alerts'])} 条信号\n"
-
-        all_msgs.append(msg)
-
-        # 避免 API 限速
-        await asyncio.sleep(0.3)
+    logger.info(
+        f"event=status_done req={request_id} total_ms={total_ms} ok={ok_count} "
+        f"fail={fail_count} slow_symbols={slow_symbols}"
+    )
 
     final_msg = "———— ———— ————\n".join(all_msgs)
     final_msg = f"📋 **行情看板** (1H)\n———— ———— ————\n{final_msg}"

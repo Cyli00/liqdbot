@@ -2,6 +2,7 @@
 策略引擎模块 - 核心交易逻辑和数据分析
 """
 
+import asyncio
 import math
 import re
 import logging
@@ -250,7 +251,6 @@ class StrategyEngine:
             return None, None, None
 
     async def _fetch_full_data(self, symbol: str, limit: int):
-        """完整获取历史数据"""
         provider = self.get_provider_for_symbol(symbol)
         tfs = self.get_timeframes_for_symbol(symbol)
 
@@ -258,34 +258,33 @@ class StrategyEngine:
         lower_tf = tfs["lower"]
         htf_tf = tfs["htf"]
 
-        df = await provider.fetch_ohlcv(symbol, main_tf, limit)
-        if df is None:
-            return None, None, None
-
         lower_minutes = self._timeframe_to_minutes(lower_tf)
         main_minutes = self._timeframe_to_minutes(main_tf)
         ratio = max(1, math.ceil(main_minutes / lower_minutes))
         lower_limit = limit * ratio + 50
 
-        lower_df = await provider.fetch_ohlcv(symbol, lower_tf, lower_limit)
-
         htf_minutes = self._timeframe_to_minutes(htf_tf)
         ratio_htf = max(1, math.ceil(htf_minutes / main_minutes))
         htf_limit = max(100, int(limit / ratio_htf) + 20)
 
-        htf_df = await provider.fetch_ohlcv(symbol, htf_tf, htf_limit)
+        main_task = provider.fetch_ohlcv(symbol, main_tf, limit)
+        lower_task = provider.fetch_ohlcv(symbol, lower_tf, lower_limit)
+        htf_task = provider.fetch_ohlcv(symbol, htf_tf, htf_limit)
+
+        results = await asyncio.gather(
+            main_task, lower_task, htf_task, return_exceptions=True
+        )
+
+        df = results[0] if not isinstance(results[0], Exception) else None
+        lower_df = results[1] if not isinstance(results[1], Exception) else None
+        htf_df = results[2] if not isinstance(results[2], Exception) else None
+
+        if df is None:
+            return None, None, None
 
         return df, lower_df, htf_df
 
     async def _fetch_incremental_data(self, symbol: str, state):
-        """
-        增量获取最新数据并合并到缓存
-
-        策略：
-        1. 只获取最新10根K线（覆盖可能的数据更新）
-        2. 根据timestamp去重合并
-        3. 保持滚动窗口大小
-        """
         import time as time_mod
 
         provider = self.get_provider_for_symbol(symbol)
@@ -298,36 +297,51 @@ class StrategyEngine:
         INCREMENTAL_LIMIT = 10
         MAX_CACHE_SIZE = FETCH_LIMIT
 
-        new_df = await provider.fetch_ohlcv(symbol, main_tf, INCREMENTAL_LIMIT)
-        if new_df is None:
-            return state.cached_df, state.cached_lower_df, state.cached_htf_df
-
-        merged_df = self._merge_frames(state.cached_df, new_df, MAX_CACHE_SIZE)
-
         lower_minutes = self._timeframe_to_minutes(lower_tf)
         main_minutes = self._timeframe_to_minutes(main_tf)
         ratio = max(1, math.ceil(main_minutes / lower_minutes))
         lower_incremental_limit = INCREMENTAL_LIMIT * ratio + 10
 
-        new_lower_df = await provider.fetch_ohlcv(
-            symbol, lower_tf, lower_incremental_limit
+        main_task = provider.fetch_ohlcv(symbol, main_tf, INCREMENTAL_LIMIT)
+        lower_task = provider.fetch_ohlcv(symbol, lower_tf, lower_incremental_limit)
+
+        htf_update_interval = 1800
+        need_htf_update = (
+            state.last_htf_fetch_time is None
+            or (time_mod.time() - state.last_htf_fetch_time) > htf_update_interval
         )
+
+        if need_htf_update:
+            htf_task = provider.fetch_ohlcv(symbol, htf_tf, 5)
+            results = await asyncio.gather(
+                main_task, lower_task, htf_task, return_exceptions=True
+            )
+            new_df = results[0] if not isinstance(results[0], Exception) else None
+            new_lower_df = results[1] if not isinstance(results[1], Exception) else None
+            new_htf_df = results[2] if not isinstance(results[2], Exception) else None
+            state.last_htf_fetch_time = time_mod.time()
+        else:
+            results = await asyncio.gather(
+                main_task, lower_task, return_exceptions=True
+            )
+            new_df = results[0] if not isinstance(results[0], Exception) else None
+            new_lower_df = results[1] if not isinstance(results[1], Exception) else None
+            new_htf_df = None
+
+        if new_df is None:
+            return state.cached_df, state.cached_lower_df, state.cached_htf_df
+
+        merged_df = self._merge_frames(state.cached_df, new_df, MAX_CACHE_SIZE)
 
         max_lower_size = MAX_CACHE_SIZE * ratio + 50
         merged_lower_df = self._merge_frames(
             state.cached_lower_df, new_lower_df, max_lower_size
         )
 
-        htf_update_interval = 1800
-        merged_htf_df = state.cached_htf_df
-
-        if (
-            state.last_htf_fetch_time is None
-            or (time_mod.time() - state.last_htf_fetch_time) > htf_update_interval
-        ):
-            new_htf_df = await provider.fetch_ohlcv(symbol, htf_tf, 5)
+        if new_htf_df is not None:
             merged_htf_df = self._merge_frames(state.cached_htf_df, new_htf_df, 200)
-            state.last_htf_fetch_time = time_mod.time()
+        else:
+            merged_htf_df = state.cached_htf_df
 
         state.cached_df = merged_df
         state.cached_lower_df = merged_lower_df

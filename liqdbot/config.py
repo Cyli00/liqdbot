@@ -9,15 +9,33 @@ from dotenv import load_dotenv
 # 加载环境变量
 load_dotenv()
 
-# 配置日志
+# --- 日志配置 ---
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+_log_level_map = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+}
+_effective_log_level = _log_level_map.get(LOG_LEVEL, logging.INFO)
+
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=_effective_log_level,
 )
 
 # 降低 httpx 和 telegram 网络相关的日志级别，避免网络波动时大量 ERROR 日志
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext._utils.networkloop").setLevel(logging.WARNING)
+
+# --- 性能调优配置 ---
+# /status 命令并发拉取数据的最大并发数
+STATUS_MAX_CONCURRENCY = int(os.getenv("STATUS_MAX_CONCURRENCY", "4"))
+# 慢请求阈值（毫秒），超过此值会输出 WARNING 日志
+SLOW_THRESHOLD_MS = int(os.getenv("SLOW_THRESHOLD_MS", "800"))
+# A股数据缓存 TTL（秒），同一根已收盘K线在此时间内复用缓存
+AKSHARE_CACHE_TTL_S = int(os.getenv("AKSHARE_CACHE_TTL_S", "300"))
 
 
 def getenv_bool(key: str, default: str = "false") -> bool:

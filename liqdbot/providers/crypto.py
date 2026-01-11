@@ -1,8 +1,12 @@
 import logging
+import time
 import pandas as pd
 import ccxt.async_support as ccxt
 
 from .base import DataProvider
+from ..config import SLOW_THRESHOLD_MS
+
+logger = logging.getLogger(__name__)
 
 
 class CryptoProvider(DataProvider):
@@ -12,23 +16,42 @@ class CryptoProvider(DataProvider):
     async def fetch_ohlcv(
         self, symbol: str, timeframe: str, limit: int
     ) -> pd.DataFrame | None:
+        start_ms = time.perf_counter_ns() // 1_000_000
         try:
             ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             df = pd.DataFrame(
                 ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"]
             )
             df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+            duration_ms = (time.perf_counter_ns() // 1_000_000) - start_ms
+            rows = len(df)
+            if duration_ms > SLOW_THRESHOLD_MS:
+                logger.warning(
+                    f"event=fetch_ohlcv_slow provider=binance symbol={symbol} "
+                    f"tf={timeframe} limit={limit} duration_ms={duration_ms} rows={rows}"
+                )
+            else:
+                logger.debug(
+                    f"event=fetch_ohlcv provider=binance symbol={symbol} "
+                    f"tf={timeframe} limit={limit} duration_ms={duration_ms} rows={rows}"
+                )
             return df
         except Exception as e:
-            logging.error(f"CryptoProvider fetch_ohlcv error for {symbol}: {e}")
+            duration_ms = (time.perf_counter_ns() // 1_000_000) - start_ms
+            logger.exception(
+                f"event=fetch_ohlcv_error provider=binance symbol={symbol} "
+                f"tf={timeframe} limit={limit} duration_ms={duration_ms} err={e}"
+            )
             return None
 
     async def validate_symbol(self, symbol: str) -> bool:
         try:
             await self.exchange.fetch_ohlcv(symbol, "1h", limit=1)
             return True
-        except Exception as e:
-            logging.warning(f"CryptoProvider validate_symbol failed for {symbol}: {e}")
+        except Exception:
+            logger.exception(
+                f"event=validate_symbol_error provider=binance symbol={symbol}"
+            )
             return False
 
     @staticmethod
