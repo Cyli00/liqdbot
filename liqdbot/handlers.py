@@ -149,6 +149,26 @@ async def list_symbols_command(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+from .alerts import AlertMessages
+
+
+def get_alert_short_name(alert_type: str) -> str:
+    mapping = {
+        AlertMessages.TYPE_SWING_HIGH_MITIGATION: "Swing High",
+        AlertMessages.TYPE_SWING_LOW_MITIGATION: "Swing Low",
+        AlertMessages.TYPE_BEARISH_NORMAL_CISD: "Bear CISD",
+        AlertMessages.TYPE_BULLISH_NORMAL_CISD: "Bull CISD",
+        AlertMessages.TYPE_BEARISH_STRONG_CISD: "Strong Bear",
+        AlertMessages.TYPE_BULLISH_STRONG_CISD: "Strong Bull",
+        AlertMessages.TYPE_MACD_RESONANCE_GOLDEN: "MACD Gold",
+        AlertMessages.TYPE_MACD_RESONANCE_DEATH: "MACD Death",
+        AlertMessages.TYPE_BELOW_MA5: "Below MA5",
+        AlertMessages.TYPE_BREAKOUT_RESISTANCE_VOL: "Vol Breakout",
+        AlertMessages.TYPE_BREAKDOWN_SUPPORT_VOL: "Vol Breakdown",
+    }
+    return mapping.get(alert_type, "Signal")
+
+
 async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -> dict:
     async with semaphore:
         start_ms = time.perf_counter_ns() // 1_000_000
@@ -169,13 +189,13 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
             result["fetch_ms"] = (time.perf_counter_ns() // 1_000_000) - fetch_start
 
             if df is None:
-                result["msg"] = f"❌ {symbol}: 数据获取失败"
+                result["msg"] = f"❌ **{symbol}** 数据获取失败"
                 result["total_ms"] = (time.perf_counter_ns() // 1_000_000) - start_ms
                 return result
 
             state = engine.get_state(symbol)
             if state is None:
-                result["msg"] = f"❌ {symbol}: 状态不存在"
+                result["msg"] = f"❌ **{symbol}** 状态异常"
                 result["total_ms"] = (time.perf_counter_ns() // 1_000_000) - start_ms
                 return result
 
@@ -191,30 +211,31 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
             result["total_ms"] = (time.perf_counter_ns() // 1_000_000) - start_ms
 
             if not res:
-                result["msg"] = f"❌ {symbol}: 分析失败"
+                result["msg"] = f"❌ **{symbol}** 分析失败"
                 return result
 
-            res_txt = f"`{res['nearest_res']:.2f}`" if res["nearest_res"] else "无"
-            sup_txt = f"`{res['nearest_sup']:.2f}`" if res["nearest_sup"] else "无"
+            msg = f"{icon} **{res['symbol']}** `{price_str}`\n"
+            msg += f"📈 {res_val} | 📉 {sup_val}\n"
 
-            msg = f"📊 **{res['symbol']}** | `{res['price']:.2f}`\n"
-            msg += f"⬆️ 上方阻力: {res_txt}\n"
-            msg += f"⬇️ 下方支撑: {sup_txt}\n"
-
+            extras = []
             if res.get("rvol_15m") is not None:
-                msg += f"📊 15m RVOL: `{res['rvol_15m']:.2f}x`\n"
+                extras.append(f"Vol: `{res['rvol_15m']:.1f}x`")
 
             if res["alerts"]:
-                msg += f"📢 触发: {len(res['alerts'])} 条信号\n"
+                alert_names = [get_alert_short_name(a[0]) for a in res["alerts"]]
+                alert_names = list(set(alert_names))
+                if alert_names:
+                    extras.append(f"⚠️ {', '.join(alert_names)}")
 
-            msg += f"🕐 更新: {result['updated_at']} ({result['total_ms']}ms)"
+            if extras:
+                msg += " | ".join(extras)
 
             result["ok"] = True
             result["msg"] = msg
 
         except Exception as e:
             result["total_ms"] = (time.perf_counter_ns() // 1_000_000) - start_ms
-            result["msg"] = f"❌ {symbol}: 异常 {e}"
+            result["msg"] = f"❌ **{symbol}** 异常: {e}"
             logger.exception(
                 f"event=status_symbol_error req=status symbol={symbol} err={e}"
             )
@@ -309,8 +330,9 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"fail={fail_count} slow_symbols={slow_symbols}"
     )
 
-    final_msg = "———— ———— ————\n".join(all_msgs)
-    final_msg = f"📋 **行情看板** (1H)\n———— ———— ————\n{final_msg}"
+    current_time_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
+    final_msg = "\n\n".join(all_msgs)
+    final_msg = f"📋 **Market Status** ({current_time_str})\n\n{final_msg}"
 
     if should_post_to_channel:
         try:
