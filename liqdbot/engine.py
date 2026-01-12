@@ -27,6 +27,7 @@ from .config import (
     ASHARE_LTF_TIMEFRAME,
     ASHARE_LOWER_TIMEFRAME,
     ASHARE_MA_PERIOD,
+    ASHARE_OPEN_COOLDOWN_BARS,
     SR_BREAKOUT_SYMBOLS,
     RVOL_N_CRYPTO,
     RVOL_N_ASHARE,
@@ -105,6 +106,14 @@ class StrategyEngine:
         if market_type == MarketType.A_SHARE:
             return self.akshare_provider
         return self.crypto_provider
+
+    async def get_symbol_display_name(self, symbol: str) -> str:
+        market_type = detect_market_type(symbol)
+        if market_type != MarketType.A_SHARE:
+            return symbol
+
+        name = await self.akshare_provider.get_symbol_name(symbol)
+        return name or symbol
 
     def get_timeframes_for_symbol(self, symbol: str) -> dict:
         market_type = detect_market_type(symbol)
@@ -883,56 +892,25 @@ class StrategyEngine:
         # ========== 计算详细信息 ==========
         ts_1h = last_1h["timestamp"]
 
-        # 1. 1h 快线倾斜角计算（度数）
-        # 使用上一根已收盘K线收盘时刻作为 x2，当前时刻作为 x1
         dif_slope_1h = 0.0
-        dif_angle_1h = 0.0
         dif_slope_grade_1h = 0
         slope_valid = False
 
         atr_1h = last_1h.get("ATR_14")
-        last_open_ts = last_1h.get("timestamp")
         if (
             atr_1h is not None
             and not pd.isna(atr_1h)
             and atr_1h != 0
-            and last_open_ts is not None
-            and not pd.isna(last_open_ts)
             and not pd.isna(mac_1h)
             and not pd.isna(prev_mac_1h)
         ):
-            bar_minutes = self._timeframe_to_minutes(TIMEFRAME)
-            bar_seconds = max(bar_minutes * 60, 1)
-            # 根据市场类型选择时区：加密货币用 UTC，A股用北京时间
-            if symbol is not None and detect_market_type(symbol) == MarketType.A_SHARE:
-                from datetime import datetime
-                from zoneinfo import ZoneInfo
-
-                now_ts = pd.Timestamp(
-                    datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
-                )
-            else:
-                now_ts = pd.Timestamp.utcnow().tz_localize(None)
-            x2_ts = last_open_ts
-            bar_close_ts = x2_ts + pd.Timedelta(seconds=bar_seconds)
-            x1_ts = now_ts
-            if x1_ts < x2_ts:
-                x1_ts = x2_ts
-            elif x1_ts > bar_close_ts:
-                x1_ts = bar_close_ts
-            dt_hours = max((x1_ts - x2_ts).total_seconds() / 3600.0, 1e-6)
             dif_change = mac_1h - prev_mac_1h
-            dif_slope_1h = (dif_change / atr_1h) / dt_hours
+            dif_slope_1h = dif_change / atr_1h
             slope_valid = True
 
-        if slope_valid:
-            dif_angle_1h = math.degrees(math.atan(dif_slope_1h))
-        else:
+        if not slope_valid:
             fallback_slope = last_1h.get("dif_slope", 0)
             dif_slope_1h = fallback_slope if not pd.isna(fallback_slope) else 0
-            dif_angle_1h = (
-                math.degrees(math.atan(dif_slope_1h)) if dif_slope_1h != 0 else 0
-            )
 
         # 斜率等级（基于历史分位数）
         if slope_valid:
@@ -1010,10 +988,18 @@ class StrategyEngine:
         slope_4h = last_4h.get("Signal_Slope", 0.0)
         hist_color_4h = last_4h.get("Hist_Color", "GRAY")
 
+        # 获取时间周期信息用于显示
+        market_type = detect_market_type(symbol) if symbol else MarketType.CRYPTO
+        if market_type == MarketType.A_SHARE:
+            ltf_label = "15m"
+            htf_label = "60m"
+        else:
+            ltf_label = "1h"
+            htf_label = "4h"
+
         info = {
             "slope_4h": slope_4h,
             "hist_color": hist_color_4h,
-            "dif_angle_1h": dif_angle_1h,
             "dif_slope_grade_1h": dif_slope_grade_1h,
             "zero_pos_1h": zero_pos_1h,
             "zero_pos_4h": zero_pos_4h,
@@ -1022,6 +1008,8 @@ class StrategyEngine:
             "cross_4h_at": cross_4h_time,
             "macd_1h": mac_1h,
             "macd_4h": mac_4h,
+            "ltf_label": ltf_label,
+            "htf_label": htf_label,
         }
 
         if res_golden:
@@ -1241,9 +1229,19 @@ class StrategyEngine:
         # 仅当 htf_df 可用时检测
         # 检测频率：每当新的15分钟K线收盘时检测
         if htf_df is not None:
-            # 计算当前时间对应的已收盘15分钟K线时间戳
-            # 当前时间 floor 到15分钟边界，即为最近已收盘的K线时间
-            current_15m_ts = pd.Timestamp.now(tz="UTC").floor("15min")
+            # 根据市场类型选择时区
+            market_type = detect_market_type(symbol)
+            if market_type == MarketType.A_SHARE:
+                from datetime import datetime
+                from zoneinfo import ZoneInfo
+
+                now_ts = pd.Timestamp(
+                    datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+                )
+            else:
+                now_ts = pd.Timestamp.utcnow().tz_localize(None)
+
+            current_15m_ts = now_ts.floor("15min")
 
             # 检查是否是新的15分钟K线
             is_new_15m_bar = (
@@ -1251,7 +1249,31 @@ class StrategyEngine:
                 or current_15m_ts > state.last_macd_check_15m_ts
             )
 
-            if is_new_15m_bar:
+            # A股开盘冷却期检查：跳过开盘后前N根K线
+            skip_macd_alert = False
+            if market_type == MarketType.A_SHARE and is_new_15m_bar:
+                from datetime import time as dt_time
+
+                current_time = now_ts.time()
+                # 上午开盘 9:30，下午开盘 13:00
+                morning_open = dt_time(9, 30)
+                afternoon_open = dt_time(13, 0)
+                # 冷却期结束时间（开盘后 N 根 15m K线）
+                cooldown_minutes = ASHARE_OPEN_COOLDOWN_BARS * 15
+                morning_cooldown_end = dt_time(9, 30 + cooldown_minutes)
+                afternoon_cooldown_end = dt_time(13, cooldown_minutes)
+
+                if (
+                    morning_open <= current_time < morning_cooldown_end
+                    or afternoon_open <= current_time < afternoon_cooldown_end
+                ):
+                    skip_macd_alert = True
+                    logging.debug(
+                        f"[{symbol}] A股开盘冷却期，跳过 MACD 共振检测 "
+                        f"(当前时间: {current_time})"
+                    )
+
+            if is_new_15m_bar and not skip_macd_alert:
                 # 只有15分钟K线收盘时才计算 MACD 相关指标
                 df_with_macd = self.calculate_macd_indicators(df)
 
@@ -1289,7 +1311,8 @@ class StrategyEngine:
                         # 记录本次触发的时间戳
                         state.last_macd_resonance_ts = res_ts
 
-                # 更新已检测的15分钟K线时间戳
+            # 更新已检测的15分钟K线时间戳（无论是否跳过检测都要更新）
+            if is_new_15m_bar:
                 state.last_macd_check_15m_ts = current_15m_ts
 
         # --- 6. MA5 跌破检测 (A股专属) ---
@@ -1347,6 +1370,28 @@ class StrategyEngine:
             return None
 
         if df is None or len(df) < ASHARE_MA_PERIOD:
+            return None
+
+        # A股开盘冷却期检查
+        from datetime import datetime, time as dt_time
+        from zoneinfo import ZoneInfo
+
+        now_ts = datetime.now(ZoneInfo("Asia/Shanghai"))
+        current_time = now_ts.time()
+        morning_open = dt_time(9, 30)
+        afternoon_open = dt_time(13, 0)
+        cooldown_minutes = ASHARE_OPEN_COOLDOWN_BARS * 15
+        morning_cooldown_end = dt_time(9, 30 + cooldown_minutes)
+        afternoon_cooldown_end = dt_time(13, cooldown_minutes)
+
+        if (
+            morning_open <= current_time < morning_cooldown_end
+            or afternoon_open <= current_time < afternoon_cooldown_end
+        ):
+            logging.debug(
+                f"[{symbol}] A股开盘冷却期，跳过 MA5 跌破检测 "
+                f"(当前时间: {current_time})"
+            )
             return None
 
         df = df.copy()

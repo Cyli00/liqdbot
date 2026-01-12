@@ -75,11 +75,12 @@ ALERT_COOLDOWN = 180  # 3分钟内同类型alert不重复发送
 
 # --- A股配置 ---
 DEFAULT_ASHARE_SYMBOL = os.getenv("ASHARE_SYMBOL", "sh000001")  # 默认上证指数
-ASHARE_TIMEFRAME = "60m"
+ASHARE_TIMEFRAME = "15m"  # A股主周期改为15m，用于MACD共振低周期
 ASHARE_HTF_TIMEFRAME = "60m"  # MACD 共振高周期
-ASHARE_LTF_TIMEFRAME = "15m"  # MACD 共振低周期
+ASHARE_LTF_TIMEFRAME = "15m"  # MACD 共振低周期（与主周期一致）
 ASHARE_LOWER_TIMEFRAME = "15m"  # 上下行量计算
 ASHARE_MA_PERIOD = 5  # 5日均线
+ASHARE_OPEN_COOLDOWN_BARS = 2  # 开盘后跳过前N根K线的MACD共振检测
 
 # --- 15m 放量突破/跌破配置 ---
 # 仅对以下标的启用（规范化后匹配）

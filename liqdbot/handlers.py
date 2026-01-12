@@ -18,6 +18,36 @@ from .providers import MarketType, detect_market_type, CryptoProvider, AksharePr
 logger = logging.getLogger(__name__)
 
 
+def normalize_symbol_input(raw_symbol: str) -> str:
+    market_type = detect_market_type(raw_symbol)
+    if market_type == MarketType.A_SHARE:
+        return AkshareProvider.normalize_symbol(raw_symbol)
+    return CryptoProvider.normalize_symbol(raw_symbol)
+
+
+def resolve_target_symbol(raw_symbol: str, current_symbols: list[str]) -> str:
+    raw_symbol = raw_symbol.strip()
+    if raw_symbol in current_symbols:
+        return raw_symbol
+
+    raw_base = raw_symbol.split("/", 1)[0]
+    candidates = [
+        AkshareProvider.normalize_symbol(raw_base),
+        AkshareProvider.normalize_symbol(raw_symbol),
+        CryptoProvider.normalize_symbol(raw_symbol),
+    ]
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        if candidate in current_symbols:
+            return candidate
+
+    return normalize_symbol_input(raw_symbol)
+
+
 async def add_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if not args:
@@ -89,9 +119,9 @@ async def del_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         )
         return
 
-    target = args[0].upper()
+    raw_target = args[0]
 
-    if target == "ALL":
+    if raw_target.upper() == "ALL":
         count = len(current_symbols)
         for sym in list(current_symbols):
             engine.remove_symbol(sym)
@@ -100,8 +130,7 @@ async def del_symbol_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             parse_mode="Markdown",
         )
     else:
-        if "/" not in target:
-            target = f"{target}/USDT"
+        target = resolve_target_symbol(raw_target, current_symbols)
 
         if engine.remove_symbol(target):
             remaining = engine.get_all_symbols()
@@ -221,7 +250,15 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
             sup_val = f"`{res['nearest_sup']:.2f}`" if res["nearest_sup"] else "None"
             price_str = f"{res['price']:,.2f}"
 
-            msg = f"{icon} **{res['symbol']}** `{price_str}`\n"
+            display_symbol = res["symbol"]
+            symbol_suffix = ""
+            if market_type == MarketType.A_SHARE:
+                display_name = await engine.get_symbol_display_name(symbol)
+                if display_name and display_name != symbol:
+                    display_symbol = display_name
+                    symbol_suffix = f" `{symbol}`"
+
+            msg = f"{icon} **{display_symbol}**{symbol_suffix} `{price_str}`\n"
             msg += f"📈 {res_val} | 📉 {sup_val}\n"
 
             extras = []
@@ -267,10 +304,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if arg.lower() == "post":
             should_post_to_channel = True
         else:
-            if "/" not in arg.upper():
-                target_symbol = f"{arg.upper()}/USDT"
-            else:
-                target_symbol = arg.upper()
+            target_symbol = normalize_symbol_input(arg)
 
     if target_symbol:
         if target_symbol not in symbols:

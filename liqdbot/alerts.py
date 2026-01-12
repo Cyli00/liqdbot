@@ -177,11 +177,12 @@ class AlertMessages:
         }
         state_str = emoji_map.get(hist_state, hist_state)
 
-        # 1h 快线倾斜角和分级
-        dif_angle_1h = info.get("dif_angle_1h", 0)
+        # 时间周期标签
+        ltf_label = info.get("ltf_label", "1h")
+        htf_label = info.get("htf_label", "4h")
+
         dif_slope_grade_1h = info.get("dif_slope_grade_1h", 0)
         grade_desc_1h = AlertMessages._get_slope_grade_desc(dif_slope_grade_1h)
-        angle_emoji = "📈" if dif_angle_1h > 0 else "📉"
 
         # 零轴位置
         zero_pos_1h = info.get("zero_pos_1h", "unknown")
@@ -200,21 +201,20 @@ class AlertMessages:
             time_gap_str = "未知"
 
         return (
-            f"🚀 **MACD 1h/4h 共振金叉**\n"
+            f"🚀 **MACD {ltf_label}/{htf_label} 共振金叉**\n"
             f"📍 标的: `{symbol}`\n"
             f"💰 当前价: `{price:.2f}`\n"
             f"\n"
-            f"**📊 1h 周期:**\n"
-            f"  • 快线倾斜角: {angle_emoji} `{dif_angle_1h:+.2f}°`\n"
+            f"**📊 {ltf_label} 周期:**\n"
             f"  • 动量强度: {grade_desc_1h}\n"
             f"  • 位置: {pos_desc_1h}\n"
             f"\n"
-            f"**📊 4h 周期:**\n"
+            f"**📊 {htf_label} 周期:**\n"
             f"  • 位置: {pos_desc_4h}\n"
             f"  • 动能: {state_str}\n"
             f"\n"
             f"⏱ **交叉时间间隔:** {time_gap_str}\n"
-            f"📝 说明: 1h 与 4h 周期趋势多头共振"
+            f"📝 说明: {ltf_label} 与 {htf_label} 周期趋势多头共振"
         )
 
     @staticmethod
@@ -229,11 +229,12 @@ class AlertMessages:
         }
         state_str = emoji_map.get(hist_state, hist_state)
 
-        # 1h 快线倾斜角和分级
-        dif_angle_1h = info.get("dif_angle_1h", 0)
+        # 时间周期标签
+        ltf_label = info.get("ltf_label", "1h")
+        htf_label = info.get("htf_label", "4h")
+
         dif_slope_grade_1h = info.get("dif_slope_grade_1h", 0)
         grade_desc_1h = AlertMessages._get_slope_grade_desc(dif_slope_grade_1h)
-        angle_emoji = "📈" if dif_angle_1h > 0 else "📉"
 
         # 零轴位置
         zero_pos_1h = info.get("zero_pos_1h", "unknown")
@@ -252,21 +253,20 @@ class AlertMessages:
             time_gap_str = "未知"
 
         return (
-            f"📉 **MACD 1h/4h 共振死叉**\n"
+            f"📉 **MACD {ltf_label}/{htf_label} 共振死叉**\n"
             f"📍 标的: `{symbol}`\n"
             f"💰 当前价: `{price:.2f}`\n"
             f"\n"
-            f"**📊 1h 周期:**\n"
-            f"  • 快线倾斜角: {angle_emoji} `{dif_angle_1h:+.2f}°`\n"
+            f"**📊 {ltf_label} 周期:**\n"
             f"  • 动量强度: {grade_desc_1h}\n"
             f"  • 位置: {pos_desc_1h}\n"
             f"\n"
-            f"**📊 4h 周期:**\n"
+            f"**📊 {htf_label} 周期:**\n"
             f"  • 位置: {pos_desc_4h}\n"
             f"  • 动能: {state_str}\n"
             f"\n"
             f"⏱ **交叉时间间隔:** {time_gap_str}\n"
-            f"📝 说明: 1h 与 4h 周期趋势空头共振"
+            f"📝 说明: {ltf_label} 与 {htf_label} 周期趋势空头共振"
         )
 
     @staticmethod
