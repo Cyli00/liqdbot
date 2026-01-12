@@ -68,11 +68,30 @@ def _get_current_bar_open_ts(tf: str) -> float:
 
 
 class AkshareProvider(DataProvider):
+    # 常用指数硬编码映射（避免大量数据拉取）
+    INDEX_NAME_MAP = {
+        "sh000001": "上证指数",
+        "sh000002": "上证A股",
+        "sh000003": "上证B股",
+        "sh000016": "上证50",
+        "sh000300": "沪深300",
+        "sh000688": "科创50",
+        "sh000852": "中证1000",
+        "sh000905": "中证500",
+        "sh000906": "中证800",
+        "sz399001": "深证成指",
+        "sz399006": "创业板指",
+        "sz399016": "深证创新",
+        "sz399300": "沪深300",
+        "sz399905": "中证500",
+        "sz399673": "创业板50",
+        "sz399330": "深证100",
+    }
+
     def __init__(self):
         self._ak = None
         self._cache: dict[tuple[str, str], tuple[pd.DataFrame, float, float]] = {}
-        self._name_cache: dict[str, str] = {}
-        self._name_cache_loaded = False
+        self._name_cache: dict[str, str] = {}  # 按需缓存的名称
 
     def _get_akshare(self):
         if self._ak is None:
@@ -81,78 +100,83 @@ class AkshareProvider(DataProvider):
             self._ak = ak
         return self._ak
 
-    async def _load_name_cache(self) -> None:
-        if self._name_cache_loaded:
-            return
+    async def get_symbol_name(self, symbol: str) -> str | None:
+        # 标准化 symbol
+        normalized = symbol.lower().strip()
 
+        # 1. 先查硬编码的指数映射
+        if normalized in self.INDEX_NAME_MAP:
+            return self.INDEX_NAME_MAP[normalized]
+
+        # 2. 再查按需缓存
+        if normalized in self._name_cache:
+            return self._name_cache[normalized]
+
+        code = self._extract_stock_code(symbol)
+        if code and code in self._name_cache:
+            return self._name_cache[code]
+
+        # 3. 按需查询单个股票/ETF 名称
+        name = await self._fetch_single_name(symbol)
+        if name:
+            # 缓存结果
+            self._name_cache[normalized] = name
+            if code:
+                self._name_cache[code] = name
+        return name
+
+    async def _fetch_single_name(self, symbol: str) -> str | None:
+        """按需查询单个股票/ETF 名称"""
         try:
             ak = self._get_akshare()
             loop = asyncio.get_running_loop()
-            df = await loop.run_in_executor(None, ak.stock_info_a_code_name)
+            code = self._extract_stock_code(symbol)
+            if not code:
+                return None
 
-            if df is not None and not df.empty:
-                self._merge_name_cache(df)
+            # 尝试从实时行情获取名称（数据量小）
+            normalized = symbol.lower().strip()
 
-            for fetcher_name in ("stock_zh_a_spot_em", "fund_etf_spot_em"):
-                fetcher = getattr(ak, fetcher_name, None)
-                if fetcher is None:
-                    continue
+            # 判断是否是 ETF（代码以 1 或 5 开头）
+            if code.startswith(("1", "5")):
+                # ETF
                 try:
-                    extra_df = await loop.run_in_executor(None, fetcher)
-                    self._merge_name_cache(extra_df)
+                    df = await loop.run_in_executor(None, ak.fund_etf_spot_em)
+                    if df is not None and not df.empty:
+                        # 查找匹配的代码
+                        for col in ["代码", "基金代码", "code"]:
+                            if col in df.columns:
+                                name_col = None
+                                for nc in ["名称", "基金简称", "name"]:
+                                    if nc in df.columns:
+                                        name_col = nc
+                                        break
+                                if name_col:
+                                    match = df[df[col].astype(str).str.contains(code, na=False)]
+                                    if not match.empty:
+                                        return str(match.iloc[0][name_col]).strip()
                 except Exception as e:
-                    logger.exception(
-                        f"event=load_name_cache_error provider=akshare source={fetcher_name} err={e}"
+                    logger.debug(f"event=fetch_etf_name_error symbol={symbol} err={e}")
+            else:
+                # 股票 - 使用 stock_individual_info_em 获取单个股票信息
+                try:
+                    df = await loop.run_in_executor(
+                        None,
+                        lambda: ak.stock_individual_info_em(symbol=code)
                     )
-        except Exception as e:
-            logger.exception(f"event=load_name_cache_error provider=akshare err={e}")
-        finally:
-            self._name_cache_loaded = True
+                    if df is not None and not df.empty:
+                        # 返回格式是 item/value 两列
+                        for _, row in df.iterrows():
+                            item = str(row.get("item", "")).strip()
+                            if item in ("股票简称", "股票名称", "名称"):
+                                return str(row.get("value", "")).strip()
+                except Exception as e:
+                    logger.debug(f"event=fetch_stock_name_error symbol={symbol} err={e}")
 
-    def _merge_name_cache(self, df: pd.DataFrame) -> None:
-        if df is None or df.empty:
-            return
-
-        code_col = None
-        name_col = None
-        code_candidates = ["code", "代码", "基金代码", "证券代码"]
-        name_candidates = ["name", "名称", "基金简称", "证券简称", "基金名称", "简称"]
-
-        for candidate in code_candidates:
-            if candidate in df.columns:
-                code_col = candidate
-                break
-
-        for candidate in name_candidates:
-            if candidate in df.columns:
-                name_col = candidate
-                break
-
-        if code_col is None or name_col is None:
-            return
-
-        for code, name in zip(df[code_col], df[name_col]):
-            code_str = str(code).strip().lower()
-            if not code_str:
-                continue
-            if "." in code_str:
-                code_str = code_str.split(".")[0]
-            if code_str.startswith(("sh", "sz")):
-                code_str = code_str[2:]
-            code_str = code_str.zfill(6)
-            name_str = str(name).strip()
-            if name_str:
-                self._name_cache[code_str] = name_str
-
-    async def get_symbol_name(self, symbol: str) -> str | None:
-        code = self._extract_stock_code(symbol)
-        if not code:
             return None
-
-        if not self._name_cache_loaded:
-            await self._load_name_cache()
-
-        return self._name_cache.get(code)
+        except Exception as e:
+            logger.warning(f"event=fetch_single_name_error symbol={symbol} err={e}")
+            return None
 
     def _extract_stock_code(self, symbol: str) -> str:
         symbol = symbol.lower().strip()
