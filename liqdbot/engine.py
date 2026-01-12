@@ -1252,7 +1252,7 @@ class StrategyEngine:
             # A股开盘冷却期检查：跳过开盘后前N根K线
             skip_macd_alert = False
             if market_type == MarketType.A_SHARE and is_new_15m_bar:
-                from datetime import time as dt_time
+                from datetime import time as dt_time, datetime as dt_datetime, timedelta
 
                 current_time = now_ts.time()
                 # 上午开盘 9:30，下午开盘 13:00
@@ -1260,8 +1260,15 @@ class StrategyEngine:
                 afternoon_open = dt_time(13, 0)
                 # 冷却期结束时间（开盘后 N 根 15m K线）
                 cooldown_minutes = ASHARE_OPEN_COOLDOWN_BARS * 15
-                morning_cooldown_end = dt_time(9, 30 + cooldown_minutes)
-                afternoon_cooldown_end = dt_time(13, cooldown_minutes)
+                # 使用 timedelta 正确计算时间
+                morning_cooldown_end = (
+                    dt_datetime.combine(dt_datetime.today(), morning_open)
+                    + timedelta(minutes=cooldown_minutes)
+                ).time()
+                afternoon_cooldown_end = (
+                    dt_datetime.combine(dt_datetime.today(), afternoon_open)
+                    + timedelta(minutes=cooldown_minutes)
+                ).time()
 
                 if (
                     morning_open <= current_time < morning_cooldown_end
@@ -1373,7 +1380,7 @@ class StrategyEngine:
             return None
 
         # A股开盘冷却期检查
-        from datetime import datetime, time as dt_time
+        from datetime import datetime, time as dt_time, timedelta
         from zoneinfo import ZoneInfo
 
         now_ts = datetime.now(ZoneInfo("Asia/Shanghai"))
@@ -1381,8 +1388,15 @@ class StrategyEngine:
         morning_open = dt_time(9, 30)
         afternoon_open = dt_time(13, 0)
         cooldown_minutes = ASHARE_OPEN_COOLDOWN_BARS * 15
-        morning_cooldown_end = dt_time(9, 30 + cooldown_minutes)
-        afternoon_cooldown_end = dt_time(13, cooldown_minutes)
+        # 使用 timedelta 正确计算时间
+        morning_cooldown_end = (
+            datetime.combine(datetime.today(), morning_open)
+            + timedelta(minutes=cooldown_minutes)
+        ).time()
+        afternoon_cooldown_end = (
+            datetime.combine(datetime.today(), afternoon_open)
+            + timedelta(minutes=cooldown_minutes)
+        ).time()
 
         if (
             morning_open <= current_time < morning_cooldown_end
