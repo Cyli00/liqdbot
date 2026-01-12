@@ -200,7 +200,8 @@ class StrategyEngine:
         return macd_series, signal_series, hist_series
 
     async def fetch_data(
-        self, symbol: str, limit: int = FETCH_LIMIT, force_full: bool = False
+        self, symbol: str, limit: int = FETCH_LIMIT, force_full: bool = False,
+        use_cache_if_available: bool = False
     ):
         """
         获取指定标的的数据（支持增量更新）
@@ -214,6 +215,7 @@ class StrategyEngine:
             symbol: 交易对
             limit: 完整获取时的K线数量
             force_full: 是否强制完整获取
+            use_cache_if_available: 如果有缓存则直接返回（用于 /status 快速响应）
         """
         import time as time_module
 
@@ -223,6 +225,11 @@ class StrategyEngine:
         state = self.get_state(symbol)
         if state is None:
             return None, None, None
+
+        # 快速模式：如果有缓存直接返回
+        if use_cache_if_available and state.cached_df is not None:
+            logging.debug(f"[{symbol}] 使用缓存数据（快速模式）")
+            return state.cached_df, state.cached_lower_df, state.cached_htf_df
 
         now = time_module.time()
 

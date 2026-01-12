@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 import pandas as pd
@@ -11,6 +12,9 @@ from ..config import SLOW_THRESHOLD_MS, AKSHARE_CACHE_TTL_S
 
 logger = logging.getLogger(__name__)
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
+
+# 专用线程池，用于并行拉取 akshare 数据
+_AKSHARE_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="akshare")
 
 TIMEFRAME_MAP = {
     "1m": "1",
@@ -245,21 +249,21 @@ class AkshareProvider(DataProvider):
             if period in ("daily", "weekly", "monthly"):
                 if is_index:
                     df = await loop.run_in_executor(
-                        None,
+                        _AKSHARE_EXECUTOR,
                         lambda: ak.index_zh_a_hist(symbol=stock_code, period=period),
                     )
                 else:
                     df = await loop.run_in_executor(
-                        None,
+                        _AKSHARE_EXECUTOR,
                         lambda: ak.stock_zh_a_hist(
                             symbol=stock_code, period=period, adjust="qfq"
                         ),
                     )
             else:
-                # 分钟级数据：拉取近 3 个月
+                # 分钟级数据：拉取近 1-3 个月
                 if is_index:
                     df = await loop.run_in_executor(
-                        None,
+                        _AKSHARE_EXECUTOR,
                         lambda: ak.index_zh_a_hist_min_em(
                             symbol=stock_code,
                             period=period,
@@ -269,7 +273,7 @@ class AkshareProvider(DataProvider):
                     )
                 else:
                     df = await loop.run_in_executor(
-                        None,
+                        _AKSHARE_EXECUTOR,
                         lambda: ak.stock_zh_a_hist_min_em(
                             symbol=stock_code,
                             period=period,

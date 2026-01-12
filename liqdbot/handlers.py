@@ -215,7 +215,8 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
 
         try:
             fetch_start = time.perf_counter_ns() // 1_000_000
-            df, lower_df, htf_df = await engine.fetch_data(symbol)
+            # 使用缓存优先模式，避免每次 /status 都重新拉取数据
+            df, lower_df, htf_df = await engine.fetch_data(symbol, use_cache_if_available=True)
             result["fetch_ms"] = (time.perf_counter_ns() // 1_000_000) - fetch_start
 
             if df is None:
