@@ -2,7 +2,6 @@ import asyncio
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 import pandas as pd
@@ -12,9 +11,6 @@ from ..config import SLOW_THRESHOLD_MS, AKSHARE_CACHE_TTL_S
 
 logger = logging.getLogger(__name__)
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
-
-# 专用线程池，用于并行拉取 akshare 数据
-_AKSHARE_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="akshare")
 
 TIMEFRAME_MAP = {
     "1m": "1",
@@ -140,7 +136,9 @@ class AkshareProvider(DataProvider):
                                         name_col = nc
                                         break
                                 if name_col:
-                                    match = df[df[col].astype(str).str.contains(code, na=False)]
+                                    match = df[
+                                        df[col].astype(str).str.contains(code, na=False)
+                                    ]
                                     if not match.empty:
                                         return str(match.iloc[0][name_col]).strip()
                 except Exception as e:
@@ -149,8 +147,7 @@ class AkshareProvider(DataProvider):
                 # 股票 - 使用 stock_individual_info_em 获取单个股票信息
                 try:
                     df = await loop.run_in_executor(
-                        None,
-                        lambda: ak.stock_individual_info_em(symbol=code)
+                        None, lambda: ak.stock_individual_info_em(symbol=code)
                     )
                     if df is not None and not df.empty:
                         # 返回格式是 item/value 两列
@@ -159,7 +156,9 @@ class AkshareProvider(DataProvider):
                             if item in ("股票简称", "股票名称", "名称"):
                                 return str(row.get("value", "")).strip()
                 except Exception as e:
-                    logger.debug(f"event=fetch_stock_name_error symbol={symbol} err={e}")
+                    logger.debug(
+                        f"event=fetch_stock_name_error symbol={symbol} err={e}"
+                    )
 
             return None
         except Exception as e:
@@ -208,7 +207,10 @@ class AkshareProvider(DataProvider):
         self._cache[cache_key] = (df.copy(), time.time(), current_bar_open)
 
     def _get_date_range(self, timeframe: str) -> tuple[str, str]:
-        """根据时间周期获取时间范围：15m 拉 1 个月，其他拉 3 个月"""
+        """根据时间周期获取时间范围：15m 拉 1 个月，其他拉 3 个月
+
+        返回 akshare 推荐的 YYYYMMDD 格式，避免空结果和重试。
+        """
         now = datetime.now(SHANGHAI_TZ)
         period_minutes = _timeframe_to_seconds(timeframe) // 60
 
@@ -220,8 +222,8 @@ class AkshareProvider(DataProvider):
             start_dt = now - pd.Timedelta(days=90)
 
         return (
-            start_dt.strftime("%Y-%m-%d 09:30:00"),
-            now.strftime("%Y-%m-%d %H:%M:%S"),
+            start_dt.strftime("%Y%m%d"),
+            now.strftime("%Y%m%d"),
         )
 
     async def fetch_ohlcv(
@@ -249,12 +251,12 @@ class AkshareProvider(DataProvider):
             if period in ("daily", "weekly", "monthly"):
                 if is_index:
                     df = await loop.run_in_executor(
-                        _AKSHARE_EXECUTOR,
+                        None,
                         lambda: ak.index_zh_a_hist(symbol=stock_code, period=period),
                     )
                 else:
                     df = await loop.run_in_executor(
-                        _AKSHARE_EXECUTOR,
+                        None,
                         lambda: ak.stock_zh_a_hist(
                             symbol=stock_code, period=period, adjust="qfq"
                         ),
@@ -263,7 +265,7 @@ class AkshareProvider(DataProvider):
                 # 分钟级数据：拉取近 1-3 个月
                 if is_index:
                     df = await loop.run_in_executor(
-                        _AKSHARE_EXECUTOR,
+                        None,
                         lambda: ak.index_zh_a_hist_min_em(
                             symbol=stock_code,
                             period=period,
@@ -273,7 +275,7 @@ class AkshareProvider(DataProvider):
                     )
                 else:
                     df = await loop.run_in_executor(
-                        _AKSHARE_EXECUTOR,
+                        None,
                         lambda: ak.stock_zh_a_hist_min_em(
                             symbol=stock_code,
                             period=period,
