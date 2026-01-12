@@ -203,6 +203,23 @@ class AkshareProvider(DataProvider):
         current_bar_open = _get_current_bar_open_ts(timeframe)
         self._cache[cache_key] = (df.copy(), time.time(), current_bar_open)
 
+    def _get_date_range(self, timeframe: str) -> tuple[str, str]:
+        """根据时间周期获取时间范围：15m 拉 1 个月，其他拉 3 个月"""
+        now = datetime.now(SHANGHAI_TZ)
+        period_minutes = _timeframe_to_seconds(timeframe) // 60
+
+        if period_minutes <= 15:
+            # 15m 及以下：拉取近 1 个月
+            start_dt = now - pd.Timedelta(days=30)
+        else:
+            # 60m 及以上：拉取近 3 个月
+            start_dt = now - pd.Timedelta(days=90)
+
+        return (
+            start_dt.strftime("%Y-%m-%d 09:30:00"),
+            now.strftime("%Y-%m-%d %H:%M:%S"),
+        )
+
     async def fetch_ohlcv(
         self, symbol: str, timeframe: str, limit: int
     ) -> pd.DataFrame | None:
@@ -223,6 +240,7 @@ class AkshareProvider(DataProvider):
             loop = asyncio.get_running_loop()
 
             is_index = self._is_index(symbol)
+            start_date, end_date = self._get_date_range(timeframe)
 
             if period in ("daily", "weekly", "monthly"):
                 if is_index:
@@ -238,18 +256,26 @@ class AkshareProvider(DataProvider):
                         ),
                     )
             else:
+                # 分钟级数据：拉取近 3 个月
                 if is_index:
                     df = await loop.run_in_executor(
                         None,
                         lambda: ak.index_zh_a_hist_min_em(
-                            symbol=stock_code, period=period
+                            symbol=stock_code,
+                            period=period,
+                            start_date=start_date,
+                            end_date=end_date,
                         ),
                     )
                 else:
                     df = await loop.run_in_executor(
                         None,
                         lambda: ak.stock_zh_a_hist_min_em(
-                            symbol=stock_code, period=period, adjust="qfq"
+                            symbol=stock_code,
+                            period=period,
+                            start_date=start_date,
+                            end_date=end_date,
+                            adjust="qfq",
                         ),
                     )
 
