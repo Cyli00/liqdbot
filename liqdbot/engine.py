@@ -21,7 +21,7 @@ from .config import (
     HIDE_EXPIRED_LEVELS,
     HIDE_MITIGATED_LEVELS,
     CISD_TOLERANCE,
-    DEFAULT_ASHARE_SYMBOL,
+    DEFAULT_ASHARE_SYMBOLS,
     ASHARE_TIMEFRAME,
     ASHARE_HTF_TIMEFRAME,
     ASHARE_LTF_TIMEFRAME,
@@ -64,9 +64,10 @@ class StrategyEngine:
             self.add_symbol(DEFAULT_SYMBOL)
             logging.info(f"初始化引擎: 默认监控 {DEFAULT_SYMBOL}")
 
-        if DEFAULT_ASHARE_SYMBOL:
-            self.add_symbol(DEFAULT_ASHARE_SYMBOL)
-            logging.info(f"初始化引擎: 默认监控 A股 {DEFAULT_ASHARE_SYMBOL}")
+        # 添加默认 A 股标的列表
+        for ashare_symbol in DEFAULT_ASHARE_SYMBOLS:
+            self.add_symbol(ashare_symbol)
+            logging.info(f"初始化引擎: 默认监控 A股 {ashare_symbol}")
 
     def add_symbol(self, symbol: str) -> bool:
         """添加新的监控标的"""

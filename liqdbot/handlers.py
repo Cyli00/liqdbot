@@ -14,6 +14,7 @@ from telegram.ext import ContextTypes
 from .engine import engine
 from .config import TG_CHAT_ID, STATUS_MAX_CONCURRENCY, SLOW_THRESHOLD_MS
 from .providers import MarketType, detect_market_type, CryptoProvider, AkshareProvider
+from .alerts import AlertMessages
 
 logger = logging.getLogger(__name__)
 
@@ -176,9 +177,6 @@ async def list_symbols_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
     msg += f"\n💡 共 {len(current_symbols)} 个标的"
     await update.message.reply_text(msg, parse_mode="Markdown")
-
-
-from .alerts import AlertMessages
 
 
 def get_alert_short_name(alert_type: str) -> str:

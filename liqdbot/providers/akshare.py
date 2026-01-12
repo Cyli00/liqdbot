@@ -71,21 +71,8 @@ class AkshareProvider(DataProvider):
     # 常用指数硬编码映射（避免大量数据拉取）
     INDEX_NAME_MAP = {
         "sh000001": "上证指数",
-        "sh000002": "上证A股",
-        "sh000003": "上证B股",
-        "sh000016": "上证50",
-        "sh000300": "沪深300",
         "sh000688": "科创50",
-        "sh000852": "中证1000",
-        "sh000905": "中证500",
-        "sh000906": "中证800",
-        "sz399001": "深证成指",
         "sz399006": "创业板指",
-        "sz399016": "深证创新",
-        "sz399300": "沪深300",
-        "sz399905": "中证500",
-        "sz399673": "创业板50",
-        "sz399330": "深证100",
     }
 
     def __init__(self):
@@ -133,9 +120,6 @@ class AkshareProvider(DataProvider):
             code = self._extract_stock_code(symbol)
             if not code:
                 return None
-
-            # 尝试从实时行情获取名称（数据量小）
-            normalized = symbol.lower().strip()
 
             # 判断是否是 ETF（代码以 1 或 5 开头）
             if code.startswith(("1", "5")):
