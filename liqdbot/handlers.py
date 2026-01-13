@@ -235,7 +235,8 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
             result["calc_ms"] = (time.perf_counter_ns() // 1_000_000) - calc_start
 
             analyze_start = time.perf_counter_ns() // 1_000_000
-            res = engine.analyze_market(symbol, state, df, htf_df, lower_df)
+            display_name = await engine.get_symbol_display_name(symbol)
+            res = engine.analyze_market(symbol, state, df, htf_df, lower_df, display_name)
             result["analyze_ms"] = (time.perf_counter_ns() // 1_000_000) - analyze_start
 
             result["updated_at"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
@@ -252,7 +253,6 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
             display_symbol = res["symbol"]
             symbol_suffix = ""
             if market_type == MarketType.A_SHARE:
-                display_name = await engine.get_symbol_display_name(symbol)
                 if display_name and display_name != symbol:
                     display_symbol = display_name
                     symbol_suffix = f" `{symbol}`"

@@ -150,7 +150,8 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
 
         try:
             df = engine.calculate_indicators(df, lower_df)
-            res = engine.analyze_market(symbol, state, df, htf_df, lower_df)
+            display_name = await engine.get_symbol_display_name(symbol)
+            res = engine.analyze_market(symbol, state, df, htf_df, lower_df, display_name)
         except Exception as e:
             logger.exception(
                 f"event=market_analyze_error run={run_id} symbol={symbol} err={e}"

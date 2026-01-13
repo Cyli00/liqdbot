@@ -1112,9 +1112,12 @@ class StrategyEngine:
         return None, None
 
     def analyze_market(
-        self, symbol: str, state: SymbolState, df, htf_df=None, lower_df=None
+        self, symbol: str, state: SymbolState, df, htf_df=None, lower_df=None,
+        display_name: str | None = None
     ):
         """分析指定标的的市场状况"""
+        # 使用显示名称（股票名称）或回退到代号
+        name = display_name or symbol
         if df is None or df.empty:
             return None
 
@@ -1151,7 +1154,7 @@ class StrategyEngine:
                             (
                                 AlertMessages.TYPE_SWING_HIGH_MITIGATION,
                                 AlertMessages.swing_high_mitigation(
-                                    symbol, current_price, level["price"]
+                                    name, current_price, level["price"]
                                 ),
                             )
                         )
@@ -1160,7 +1163,7 @@ class StrategyEngine:
                             (
                                 AlertMessages.TYPE_SWING_LOW_MITIGATION,
                                 AlertMessages.swing_low_mitigation(
-                                    symbol, current_price, level["price"]
+                                    name, current_price, level["price"]
                                 ),
                             )
                         )
@@ -1194,7 +1197,7 @@ class StrategyEngine:
                         ):
                             alert_type = AlertMessages.TYPE_BEARISH_STRONG_CISD
                             alert_msg = AlertMessages.bearish_strong_cisd(
-                                symbol,
+                                name,
                                 current_price,
                                 origin_level,
                                 wicked_high_level,
@@ -1203,7 +1206,7 @@ class StrategyEngine:
                         else:
                             alert_type = AlertMessages.TYPE_BEARISH_NORMAL_CISD
                             alert_msg = AlertMessages.bearish_normal_cisd(
-                                symbol, current_price, origin_level
+                                name, current_price, origin_level
                             )
                     else:
                         # 看涨 CISD：检查是否有低点扫荡且价格高于被扫荡水平
@@ -1214,7 +1217,7 @@ class StrategyEngine:
                         ):
                             alert_type = AlertMessages.TYPE_BULLISH_STRONG_CISD
                             alert_msg = AlertMessages.bullish_strong_cisd(
-                                symbol,
+                                name,
                                 current_price,
                                 origin_level,
                                 wicked_low_level,
@@ -1223,7 +1226,7 @@ class StrategyEngine:
                         else:
                             alert_type = AlertMessages.TYPE_BULLISH_NORMAL_CISD
                             alert_msg = AlertMessages.bullish_normal_cisd(
-                                symbol, current_price, origin_level
+                                name, current_price, origin_level
                             )
 
                     if state.should_send_cisd_origin_alert(
@@ -1310,7 +1313,7 @@ class StrategyEngine:
                                 (
                                     AlertMessages.TYPE_MACD_RESONANCE_GOLDEN,
                                     AlertMessages.macd_resonance_golden(
-                                        symbol, current_price, res_info
+                                        name, current_price, res_info
                                     ),
                                 )
                             )
@@ -1319,7 +1322,7 @@ class StrategyEngine:
                                 (
                                     AlertMessages.TYPE_MACD_RESONANCE_DEATH,
                                     AlertMessages.macd_resonance_death(
-                                        symbol, current_price, res_info
+                                        name, current_price, res_info
                                     ),
                                 )
                             )
@@ -1331,7 +1334,7 @@ class StrategyEngine:
                 state.last_macd_check_15m_ts = current_15m_ts
 
         # --- 6. MA5 跌破检测 (A股专属) ---
-        ma5_alert = self.check_below_ma5(symbol, df, state)
+        ma5_alert = self.check_below_ma5(symbol, df, state, name)
         if ma5_alert is not None:
             msgs.append(ma5_alert)
 
@@ -1357,7 +1360,7 @@ class StrategyEngine:
         nearest_sup = max([x for x in active_lows if x < current_price], default=None)
 
         sr_break_alert = self.check_sr_breakout_vol(
-            symbol, state, lower_df, nearest_res, nearest_sup
+            symbol, state, lower_df, nearest_res, nearest_sup, name
         )
         if sr_break_alert is not None:
             msgs.append(sr_break_alert)
@@ -1378,8 +1381,9 @@ class StrategyEngine:
         state.last_analysis = result
         return result
 
-    def check_below_ma5(self, symbol: str, df, state: SymbolState):
+    def check_below_ma5(self, symbol: str, df, state: SymbolState, display_name: str | None = None):
         """检查 A股 是否跌破 5 日均线 (仅 A股)"""
+        name = display_name or symbol
         market_type = detect_market_type(symbol)
         if market_type != MarketType.A_SHARE:
             return None
@@ -1435,7 +1439,7 @@ class StrategyEngine:
                 state.last_ma5_alert_bar_ts = current_ts
                 return (
                     AlertMessages.TYPE_BELOW_MA5,
-                    AlertMessages.below_ma5(symbol, close_price, ma5_value),
+                    AlertMessages.below_ma5(name, close_price, ma5_value),
                 )
 
         return None
@@ -1467,7 +1471,9 @@ class StrategyEngine:
         lower_df,
         nearest_res: float | None,
         nearest_sup: float | None,
+        display_name: str | None = None,
     ):
+        name = display_name or symbol
         if symbol not in SR_BREAKOUT_SYMBOLS:
             return None
 
@@ -1511,7 +1517,7 @@ class StrategyEngine:
             return (
                 AlertMessages.TYPE_BREAKOUT_RESISTANCE_VOL,
                 AlertMessages.breakout_resistance_vol(
-                    symbol, prev_close, nearest_res, rvol
+                    name, prev_close, nearest_res, rvol
                 ),
             )
 
@@ -1520,7 +1526,7 @@ class StrategyEngine:
             return (
                 AlertMessages.TYPE_BREAKDOWN_SUPPORT_VOL,
                 AlertMessages.breakdown_support_vol(
-                    symbol, prev_close, nearest_sup, rvol
+                    name, prev_close, nearest_sup, rvol
                 ),
             )
 
