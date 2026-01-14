@@ -17,6 +17,9 @@ SIGNAL_STRENGTH = {
     "macd_resonance_golden": 3,
     "macd_resonance_death": 3,
     "below_ma5": 2,
+    "above_ma5": 2,
+    "below_ma10": 2,
+    "above_ma10": 2,
     "breakout_resistance_vol": 3,
     "breakdown_support_vol": 3,
 }
@@ -36,7 +39,8 @@ SIGNAL_GROUPS = {
         "macd_resonance_death",
         "breakdown_support_vol",
     ],
-    "ma5": ["below_ma5"],
+    "ma5": ["below_ma5", "above_ma5"],
+    "ma10": ["below_ma10", "above_ma10"],
 }
 
 SIGNAL_GROUP_BY_TYPE = {
@@ -141,3 +145,16 @@ class SymbolState:
         self.last_macd_check_15m_ts = None
         self.last_ma5_alert_bar_ts = None
         self.last_sr_break_15m_ts = None
+        # 放量突破 15m tick 门控
+        self.last_sr_break_tick_ts = None  # 上次触发放量突破的 15m tick 时间戳
+        self.last_sr_break_tick_price = None  # 上次触发时的价格
+        # A股 1h swing levels（用于放量突破，避免影响现有15m策略）
+        self.swing_levels_1h = []
+        # --- MA5/MA10 状态机 (A股) ---
+        # True = 当前处于"已跌破"状态，False = 在均线上方
+        self.ma5_below: bool = False
+        self.ma10_below: bool = False
+        self.last_ma_check_15m_ts = None  # 用于确保每根 15m K线只处理一次
+        # --- MACD A股日内去重 ---
+        # 格式: "YYYY-MM-DD"，当天已触发后不再重复
+        self.last_macd_alert_date: str | None = None

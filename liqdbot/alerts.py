@@ -99,6 +99,11 @@ class AlertMessages:
 
     # ==================== MA5 策略 (A股专属) ====================
     TYPE_BELOW_MA5 = "below_ma5"
+    TYPE_ABOVE_MA5 = "above_ma5"
+
+    # ==================== MA10 策略 (A股专属) ====================
+    TYPE_BELOW_MA10 = "below_ma10"
+    TYPE_ABOVE_MA10 = "above_ma10"
 
     # ==================== 15m 放量突破/跌破 ====================
     TYPE_BREAKOUT_RESISTANCE_VOL = "breakout_resistance_vol"
@@ -109,11 +114,11 @@ class AlertMessages:
         symbol: str, price: float, level: float, rvol: float
     ) -> str:
         return (
-            f"🚀 **放量突破阻力位** (15m)\n"
+            f"🚀 **放量突破阻力位** (1h, 15m确认)\n"
             f"📍 标的: `{symbol}`\n"
             f"💰 收盘价: `{price:.2f}`\n"
             f"🎯 阻力位: `{level:.2f}`\n"
-            f"📊 RVOL: `{rvol:.2f}x`"
+            f"📊 RVOL(1h): `{rvol:.2f}x`"
         )
 
     @staticmethod
@@ -121,11 +126,11 @@ class AlertMessages:
         symbol: str, price: float, level: float, rvol: float
     ) -> str:
         return (
-            f"⚠️ **放量跌破支撑位** (15m)\n"
+            f"⚠️ **放量跌破支撑位** (1h, 15m确认)\n"
             f"📍 标的: `{symbol}`\n"
             f"💰 收盘价: `{price:.2f}`\n"
             f"🎯 支撑位: `{level:.2f}`\n"
-            f"📊 RVOL: `{rvol:.2f}x`"
+            f"📊 RVOL(1h): `{rvol:.2f}x`"
         )
 
     @staticmethod
@@ -278,4 +283,37 @@ class AlertMessages:
             f"💰 当前价: `{price:.2f}`\n"
             f"📊 MA5: `{ma5:.2f}`\n"
             f"📉 偏离: `{diff_pct:.2f}%`"
+        )
+
+    @staticmethod
+    def above_ma5(symbol: str, price: float, ma5: float) -> str:
+        diff_pct = (price - ma5) / ma5 * 100
+        return (
+            f"✅ **站上5日均线**\n"
+            f"📍 标的: `{symbol}`\n"
+            f"💰 当前价: `{price:.2f}`\n"
+            f"📊 MA5: `{ma5:.2f}`\n"
+            f"📈 偏离: `{diff_pct:.2f}%`"
+        )
+
+    @staticmethod
+    def below_ma10(symbol: str, price: float, ma10: float) -> str:
+        diff_pct = (price - ma10) / ma10 * 100
+        return (
+            f"⚠️ **跌破10日均线**\n"
+            f"📍 标的: `{symbol}`\n"
+            f"💰 当前价: `{price:.2f}`\n"
+            f"📊 MA10: `{ma10:.2f}`\n"
+            f"📉 偏离: `{diff_pct:.2f}%`"
+        )
+
+    @staticmethod
+    def above_ma10(symbol: str, price: float, ma10: float) -> str:
+        diff_pct = (price - ma10) / ma10 * 100
+        return (
+            f"✅ **站上10日均线**\n"
+            f"📍 标的: `{symbol}`\n"
+            f"💰 当前价: `{price:.2f}`\n"
+            f"📊 MA10: `{ma10:.2f}`\n"
+            f"📈 偏离: `{diff_pct:.2f}%`"
         )

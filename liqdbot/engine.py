@@ -27,10 +27,15 @@ from .config import (
     ASHARE_LTF_TIMEFRAME,
     ASHARE_LOWER_TIMEFRAME,
     ASHARE_MA_PERIOD,
+    ASHARE_MA5_BREAK_PCT,
+    ASHARE_MA10_PERIOD,
+    ASHARE_MA10_BREAK_PCT,
     ASHARE_OPEN_COOLDOWN_BARS,
     SR_BREAKOUT_SYMBOLS,
     RVOL_N_CRYPTO,
     RVOL_N_ASHARE,
+    RVOL_N_CRYPTO_1H,
+    RVOL_N_ASHARE_1H,
     RVOL_THRESHOLD,
 )
 from .state import SymbolState
@@ -200,8 +205,11 @@ class StrategyEngine:
         return macd_series, signal_series, hist_series
 
     async def fetch_data(
-        self, symbol: str, limit: int = FETCH_LIMIT, force_full: bool = False,
-        use_cache_if_available: bool = False
+        self,
+        symbol: str,
+        limit: int = FETCH_LIMIT,
+        force_full: bool = False,
+        use_cache_if_available: bool = False,
     ):
         """
         获取指定标的的数据（支持增量更新）
@@ -270,10 +278,14 @@ class StrategyEngine:
     async def _fetch_full_data(self, symbol: str, limit: int):
         provider = self.get_provider_for_symbol(symbol)
         tfs = self.get_timeframes_for_symbol(symbol)
+        market_type = detect_market_type(symbol)
 
         main_tf = tfs["main"]
         lower_tf = tfs["lower"]
         htf_tf = tfs["htf"]
+
+        # 加密货币不再需要15m数据（放量突破已改用1h RVOL）
+        need_lower_tf = market_type == MarketType.A_SHARE
 
         lower_minutes = self._timeframe_to_minutes(lower_tf)
         main_minutes = self._timeframe_to_minutes(main_tf)
@@ -285,16 +297,21 @@ class StrategyEngine:
         htf_limit = max(100, int(limit / ratio_htf) + 20)
 
         main_task = provider.fetch_ohlcv(symbol, main_tf, limit)
-        lower_task = provider.fetch_ohlcv(symbol, lower_tf, lower_limit)
         htf_task = provider.fetch_ohlcv(symbol, htf_tf, htf_limit)
 
-        results = await asyncio.gather(
-            main_task, lower_task, htf_task, return_exceptions=True
-        )
-
-        df = results[0] if not isinstance(results[0], Exception) else None
-        lower_df = results[1] if not isinstance(results[1], Exception) else None
-        htf_df = results[2] if not isinstance(results[2], Exception) else None
+        if need_lower_tf:
+            lower_task = provider.fetch_ohlcv(symbol, lower_tf, lower_limit)
+            results = await asyncio.gather(
+                main_task, lower_task, htf_task, return_exceptions=True
+            )
+            df = results[0] if not isinstance(results[0], Exception) else None
+            lower_df = results[1] if not isinstance(results[1], Exception) else None
+            htf_df = results[2] if not isinstance(results[2], Exception) else None
+        else:
+            results = await asyncio.gather(main_task, htf_task, return_exceptions=True)
+            df = results[0] if not isinstance(results[0], Exception) else None
+            lower_df = None  # 加密货币不拉取15m数据
+            htf_df = results[1] if not isinstance(results[1], Exception) else None
 
         if df is None:
             return None, None, None
@@ -306,10 +323,14 @@ class StrategyEngine:
 
         provider = self.get_provider_for_symbol(symbol)
         tfs = self.get_timeframes_for_symbol(symbol)
+        market_type = detect_market_type(symbol)
 
         main_tf = tfs["main"]
         lower_tf = tfs["lower"]
         htf_tf = tfs["htf"]
+
+        # 加密货币不再需要15m数据（放量突破已改用1h RVOL）
+        need_lower_tf = market_type == MarketType.A_SHARE
 
         INCREMENTAL_LIMIT = 10
         MAX_CACHE_SIZE = FETCH_LIMIT
@@ -320,7 +341,6 @@ class StrategyEngine:
         lower_incremental_limit = INCREMENTAL_LIMIT * ratio + 10
 
         main_task = provider.fetch_ohlcv(symbol, main_tf, INCREMENTAL_LIMIT)
-        lower_task = provider.fetch_ohlcv(symbol, lower_tf, lower_incremental_limit)
 
         htf_update_interval = 1800
         need_htf_update = (
@@ -328,32 +348,62 @@ class StrategyEngine:
             or (time_mod.time() - state.last_htf_fetch_time) > htf_update_interval
         )
 
-        if need_htf_update:
-            htf_task = provider.fetch_ohlcv(symbol, htf_tf, 5)
-            results = await asyncio.gather(
-                main_task, lower_task, htf_task, return_exceptions=True
-            )
-            new_df = results[0] if not isinstance(results[0], Exception) else None
-            new_lower_df = results[1] if not isinstance(results[1], Exception) else None
-            new_htf_df = results[2] if not isinstance(results[2], Exception) else None
-            state.last_htf_fetch_time = time_mod.time()
+        # 根据市场类型和HTF更新需求组合任务
+        if need_lower_tf:
+            lower_task = provider.fetch_ohlcv(symbol, lower_tf, lower_incremental_limit)
+            if need_htf_update:
+                htf_task = provider.fetch_ohlcv(symbol, htf_tf, 5)
+                results = await asyncio.gather(
+                    main_task, lower_task, htf_task, return_exceptions=True
+                )
+                new_df = results[0] if not isinstance(results[0], Exception) else None
+                new_lower_df = (
+                    results[1] if not isinstance(results[1], Exception) else None
+                )
+                new_htf_df = (
+                    results[2] if not isinstance(results[2], Exception) else None
+                )
+                state.last_htf_fetch_time = time_mod.time()
+            else:
+                results = await asyncio.gather(
+                    main_task, lower_task, return_exceptions=True
+                )
+                new_df = results[0] if not isinstance(results[0], Exception) else None
+                new_lower_df = (
+                    results[1] if not isinstance(results[1], Exception) else None
+                )
+                new_htf_df = None
         else:
-            results = await asyncio.gather(
-                main_task, lower_task, return_exceptions=True
-            )
-            new_df = results[0] if not isinstance(results[0], Exception) else None
-            new_lower_df = results[1] if not isinstance(results[1], Exception) else None
-            new_htf_df = None
+            # 加密货币：不拉取15m数据
+            new_lower_df = None
+            if need_htf_update:
+                htf_task = provider.fetch_ohlcv(symbol, htf_tf, 5)
+                results = await asyncio.gather(
+                    main_task, htf_task, return_exceptions=True
+                )
+                new_df = results[0] if not isinstance(results[0], Exception) else None
+                new_htf_df = (
+                    results[1] if not isinstance(results[1], Exception) else None
+                )
+                state.last_htf_fetch_time = time_mod.time()
+            else:
+                results = await asyncio.gather(main_task, return_exceptions=True)
+                new_df = results[0] if not isinstance(results[0], Exception) else None
+                new_htf_df = None
 
         if new_df is None:
             return state.cached_df, state.cached_lower_df, state.cached_htf_df
 
         merged_df = self._merge_frames(state.cached_df, new_df, MAX_CACHE_SIZE)
 
-        max_lower_size = MAX_CACHE_SIZE * ratio + 50
-        merged_lower_df = self._merge_frames(
-            state.cached_lower_df, new_lower_df, max_lower_size
-        )
+        # 只有A股需要合并lower_df
+        if need_lower_tf:
+            max_lower_size = MAX_CACHE_SIZE * ratio + 50
+            merged_lower_df = self._merge_frames(
+                state.cached_lower_df, new_lower_df, max_lower_size
+            )
+        else:
+            merged_lower_df = None
 
         if new_htf_df is not None:
             merged_htf_df = self._merge_frames(state.cached_htf_df, new_htf_df, 200)
@@ -1112,8 +1162,13 @@ class StrategyEngine:
         return None, None
 
     def analyze_market(
-        self, symbol: str, state: SymbolState, df, htf_df=None, lower_df=None,
-        display_name: str | None = None
+        self,
+        symbol: str,
+        state: SymbolState,
+        df,
+        htf_df=None,
+        lower_df=None,
+        display_name: str | None = None,
     ):
         """分析指定标的的市场状况"""
         # 使用显示名称（股票名称）或回退到代号
@@ -1307,7 +1362,16 @@ class StrategyEngine:
                         or res_ts > state.last_macd_resonance_ts
                     )
 
-                    if is_new_bar:
+                    # A股日内 MACD 仅一次提醒
+                    allow_macd_alert = True
+                    if market_type == MarketType.A_SHARE:
+                        today_str = now_ts.strftime("%Y-%m-%d")
+                        if state.last_macd_alert_date == today_str:
+                            allow_macd_alert = False
+                        else:
+                            state.last_macd_alert_date = today_str
+
+                    if is_new_bar and allow_macd_alert:
                         if res_val == 1:
                             msgs.append(
                                 (
@@ -1326,17 +1390,16 @@ class StrategyEngine:
                                     ),
                                 )
                             )
-                        # 记录本次触发的时间戳
-                        state.last_macd_resonance_ts = res_ts
+                    # 记录本次触发的时间戳（无论是否发送都更新，避免重复检测）
+                    state.last_macd_resonance_ts = res_ts
 
             # 更新已检测的15分钟K线时间戳（无论是否跳过检测都要更新）
             if is_new_15m_bar:
                 state.last_macd_check_15m_ts = current_15m_ts
 
-        # --- 6. MA5 跌破检测 (A股专属) ---
-        ma5_alert = self.check_below_ma5(symbol, df, state, name)
-        if ma5_alert is not None:
-            msgs.append(ma5_alert)
+        # --- 6. MA5/MA10 状态机检测 (A股专属) ---
+        ma_alerts = self.check_ma_alerts(symbol, df, state, name)
+        msgs.extend(ma_alerts)
 
         # --- 7. 计算当前最近的支撑/阻力 ---
         if self.hide_mitigated_levels:
@@ -1360,7 +1423,7 @@ class StrategyEngine:
         nearest_sup = max([x for x in active_lows if x < current_price], default=None)
 
         sr_break_alert = self.check_sr_breakout_vol(
-            symbol, state, lower_df, nearest_res, nearest_sup, name
+            symbol, state, df, lower_df, nearest_res, nearest_sup, name
         )
         if sr_break_alert is not None:
             msgs.append(sr_break_alert)
@@ -1381,26 +1444,41 @@ class StrategyEngine:
         state.last_analysis = result
         return result
 
-    def check_below_ma5(self, symbol: str, df, state: SymbolState, display_name: str | None = None):
-        """检查 A股 是否跌破 5 日均线 (仅 A股)"""
+    def check_ma_alerts(
+        self, symbol: str, df, state: SymbolState, display_name: str | None = None
+    ) -> list[tuple[str, str]]:
+        """
+        A股 MA5/MA10 状态机检测（15m 收盘驱动）
+        - 跌破条件: close < MA * (1 - break_pct/100)
+        - 站上条件: close >= MA
+        - 状态机保证：跌破后不重复提醒，站上后再跌破才提醒
+        """
         name = display_name or symbol
         market_type = detect_market_type(symbol)
         if market_type != MarketType.A_SHARE:
-            return None
+            return []
 
-        if df is None or len(df) < ASHARE_MA_PERIOD:
-            return None
+        required_period = max(ASHARE_MA_PERIOD, ASHARE_MA10_PERIOD)
+        if df is None or len(df) < required_period:
+            return []
 
-        # A股开盘冷却期检查
         from datetime import datetime, time as dt_time, timedelta
         from zoneinfo import ZoneInfo
 
         now_ts = datetime.now(ZoneInfo("Asia/Shanghai"))
         current_time = now_ts.time()
+        current_15m_ts = pd.Timestamp(now_ts.replace(tzinfo=None)).floor("15min")
+
+        is_new_15m_bar = (
+            state.last_ma_check_15m_ts is None
+            or current_15m_ts > state.last_ma_check_15m_ts
+        )
+        if not is_new_15m_bar:
+            return []
+
         morning_open = dt_time(9, 30)
         afternoon_open = dt_time(13, 0)
         cooldown_minutes = ASHARE_OPEN_COOLDOWN_BARS * 15
-        # 使用 timedelta 正确计算时间
         morning_cooldown_end = (
             datetime.combine(datetime.today(), morning_open)
             + timedelta(minutes=cooldown_minutes)
@@ -1415,36 +1493,69 @@ class StrategyEngine:
             or afternoon_open <= current_time < afternoon_cooldown_end
         ):
             logging.debug(
-                f"[{symbol}] A股开盘冷却期，跳过 MA5 跌破检测 "
-                f"(当前时间: {current_time})"
+                f"[{symbol}] A股开盘冷却期，跳过 MA 检测 (当前时间: {current_time})"
             )
-            return None
+            state.last_ma_check_15m_ts = current_15m_ts
+            return []
 
         df = df.copy()
         df["MA5"] = df["close"].rolling(ASHARE_MA_PERIOD).mean()
+        df["MA10"] = df["close"].rolling(ASHARE_MA10_PERIOD).mean()
 
         last = df.iloc[-1]
         close_price = last["close"]
         ma5_value = last["MA5"]
-        current_ts = last["timestamp"]
+        ma10_value = last["MA10"]
 
-        if pd.isna(ma5_value):
-            return None
+        msgs: list[tuple[str, str]] = []
 
-        if close_price < ma5_value:
-            if (
-                state.last_ma5_alert_bar_ts is None
-                or current_ts > state.last_ma5_alert_bar_ts
-            ):
-                state.last_ma5_alert_bar_ts = current_ts
-                return (
-                    AlertMessages.TYPE_BELOW_MA5,
-                    AlertMessages.below_ma5(name, close_price, ma5_value),
-                )
+        if not pd.isna(ma5_value):
+            break_threshold_ma5 = ma5_value * (1 - ASHARE_MA5_BREAK_PCT / 100)
+            if not state.ma5_below:
+                if close_price < break_threshold_ma5:
+                    state.ma5_below = True
+                    msgs.append(
+                        (
+                            AlertMessages.TYPE_BELOW_MA5,
+                            AlertMessages.below_ma5(name, close_price, ma5_value),
+                        )
+                    )
+            else:
+                if close_price >= ma5_value:
+                    state.ma5_below = False
+                    msgs.append(
+                        (
+                            AlertMessages.TYPE_ABOVE_MA5,
+                            AlertMessages.above_ma5(name, close_price, ma5_value),
+                        )
+                    )
 
-        return None
+        if not pd.isna(ma10_value):
+            break_threshold_ma10 = ma10_value * (1 - ASHARE_MA10_BREAK_PCT / 100)
+            if not state.ma10_below:
+                if close_price < break_threshold_ma10:
+                    state.ma10_below = True
+                    msgs.append(
+                        (
+                            AlertMessages.TYPE_BELOW_MA10,
+                            AlertMessages.below_ma10(name, close_price, ma10_value),
+                        )
+                    )
+            else:
+                if close_price >= ma10_value:
+                    state.ma10_below = False
+                    msgs.append(
+                        (
+                            AlertMessages.TYPE_ABOVE_MA10,
+                            AlertMessages.above_ma10(name, close_price, ma10_value),
+                        )
+                    )
+
+        state.last_ma_check_15m_ts = current_15m_ts
+        return msgs
 
     def _compute_current_rvol(self, symbol: str, lower_df) -> float | None:
+        """计算当前15m RVOL（用于状态显示，保留兼容）"""
         if symbol not in SR_BREAKOUT_SYMBOLS:
             return None
         if lower_df is None or len(lower_df) < 3:
@@ -1464,73 +1575,302 @@ class StrategyEngine:
             return None
         return last_bar["volume"] / vol_sma
 
+    def _aggregate_ashare_15m_to_1h(self, lower_df) -> pd.DataFrame | None:
+        """
+        将A股15m K线聚合为1h K线（按交易时段桶）
+
+        A股交易时段：
+        - 上午: 9:30-11:30 (2小时)
+        - 下午: 13:00-15:00 (2小时)
+
+        1h桶划分：
+        - 9:30-10:30 (第1小时)
+        - 10:30-11:30 (第2小时)
+        - 13:00-14:00 (第3小时)
+        - 14:00-15:00 (第4小时)
+        """
+        if lower_df is None or lower_df.empty:
+            return None
+
+        ldf = lower_df.copy()
+
+        # 提取时间信息
+        ldf["time"] = ldf["timestamp"].dt.time
+        ldf["date"] = ldf["timestamp"].dt.date
+
+        from datetime import time as dt_time
+
+        def get_1h_bucket(ts):
+            """根据时间戳返回1h桶的起始时间"""
+            t = ts.time()
+            d = ts.date()
+
+            # 上午第1小时: 9:30-10:30
+            if dt_time(9, 30) <= t < dt_time(10, 30):
+                return pd.Timestamp(
+                    year=d.year, month=d.month, day=d.day, hour=9, minute=30
+                )
+            # 上午第2小时: 10:30-11:30
+            elif dt_time(10, 30) <= t < dt_time(11, 30):
+                return pd.Timestamp(
+                    year=d.year, month=d.month, day=d.day, hour=10, minute=30
+                )
+            # 下午第1小时: 13:00-14:00
+            elif dt_time(13, 0) <= t < dt_time(14, 0):
+                return pd.Timestamp(
+                    year=d.year, month=d.month, day=d.day, hour=13, minute=0
+                )
+            # 下午第2小时: 14:00-15:00
+            elif dt_time(14, 0) <= t < dt_time(15, 0):
+                return pd.Timestamp(
+                    year=d.year, month=d.month, day=d.day, hour=14, minute=0
+                )
+            else:
+                # 非交易时段，返回 None
+                return None
+
+        ldf["bucket_1h"] = ldf["timestamp"].apply(get_1h_bucket)
+        ldf = ldf.dropna(subset=["bucket_1h"])
+
+        if ldf.empty:
+            return None
+
+        # 按1h桶聚合OHLCV
+        agg_df = (
+            ldf.groupby("bucket_1h")
+            .agg(
+                {
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum",
+                }
+            )
+            .reset_index()
+        )
+
+        agg_df = agg_df.rename(columns={"bucket_1h": "timestamp"})
+        agg_df = agg_df.sort_values("timestamp").reset_index(drop=True)
+
+        return agg_df
+
+    def _get_elapsed_fraction_1h(self, symbol: str) -> float:
+        """
+        计算当前1h K线已经过的时间比例
+
+        返回值范围: 0.25 ~ 1.0
+        - 15分钟: 0.25
+        - 30分钟: 0.5
+        - 45分钟: 0.75
+        - 60分钟: 1.0
+
+        设置下限0.25避免刚开1h时除数过小
+        """
+        market_type = detect_market_type(symbol)
+
+        if market_type == MarketType.A_SHARE:
+            from datetime import datetime, time as dt_time
+            from zoneinfo import ZoneInfo
+
+            now = datetime.now(ZoneInfo("Asia/Shanghai"))
+            current_time = now.time()
+
+            # 确定当前所在的1h桶及其起始时间
+            if dt_time(9, 30) <= current_time < dt_time(10, 30):
+                bucket_start_minutes = 9 * 60 + 30
+            elif dt_time(10, 30) <= current_time < dt_time(11, 30):
+                bucket_start_minutes = 10 * 60 + 30
+            elif dt_time(13, 0) <= current_time < dt_time(14, 0):
+                bucket_start_minutes = 13 * 60
+            elif dt_time(14, 0) <= current_time < dt_time(15, 0):
+                bucket_start_minutes = 14 * 60
+            else:
+                # 非交易时段，返回1.0（使用完整K线）
+                return 1.0
+
+            current_minutes = current_time.hour * 60 + current_time.minute
+            elapsed_minutes = current_minutes - bucket_start_minutes
+            fraction = elapsed_minutes / 60.0
+        else:
+            # 加密货币：UTC时间
+            now = pd.Timestamp.utcnow()
+            elapsed_minutes = now.minute
+            fraction = elapsed_minutes / 60.0
+
+        # 设置下限0.25，避免刚开1h时除数过小
+        return max(0.25, min(1.0, fraction))
+
+    def _compute_rvol_est_1h(
+        self, symbol: str, df_1h, current_1h_volume: float | None = None
+    ) -> float | None:
+        """
+        计算进行中1h K线的估算RVOL
+
+        rvol_est_1h = current_1h_volume / (SMA(prev_1h_volume, N) * elapsed_fraction)
+        """
+        if symbol not in SR_BREAKOUT_SYMBOLS:
+            return None
+        if df_1h is None or len(df_1h) < 3:
+            return None
+
+        market_type = detect_market_type(symbol)
+        rvol_n = (
+            RVOL_N_ASHARE_1H if market_type == MarketType.A_SHARE else RVOL_N_CRYPTO_1H
+        )
+
+        if len(df_1h) < rvol_n + 1:
+            return None
+
+        # 计算历史1h成交量的SMA（不包含当前进行中的K线）
+        # 使用倒数第2根到倒数第(rvol_n+1)根的数据
+        hist_volumes = df_1h["volume"].iloc[-(rvol_n + 1) : -1]
+        vol_sma = hist_volumes.mean()
+
+        if pd.isna(vol_sma) or vol_sma == 0:
+            return None
+
+        # 获取当前1h成交量
+        if current_1h_volume is None:
+            current_1h_volume = df_1h["volume"].iloc[-1]
+
+        # 获取已经过时间比例
+        elapsed_fraction = self._get_elapsed_fraction_1h(symbol)
+
+        # 计算估算RVOL
+        expected_volume = vol_sma * elapsed_fraction
+        if expected_volume == 0:
+            return None
+
+        return current_1h_volume / expected_volume
+
     def check_sr_breakout_vol(
         self,
         symbol: str,
         state: SymbolState,
+        df,
         lower_df,
         nearest_res: float | None,
         nearest_sup: float | None,
         display_name: str | None = None,
     ):
+        """
+        检测放量突破/跌破（基于1h RVOL，15m收盘确认）
+
+        逻辑：
+        1. 使用1h K线计算RVOL（进行中估算）
+        2. 使用15m收盘价确认突破
+        3. 节拍门控：只在新15m收盘时检测
+
+        Args:
+            symbol: 标的代码
+            state: 标的状态
+            df: 主周期数据（加密1h，A股15m）
+            lower_df: 低周期数据（15m，A股用于聚合1h）
+            nearest_res: 最近阻力位（来自1h swing levels）
+            nearest_sup: 最近支撑位（来自1h swing levels）
+            display_name: 显示名称
+        """
         name = display_name or symbol
         if symbol not in SR_BREAKOUT_SYMBOLS:
             return None
 
-        if lower_df is None or len(lower_df) < 3:
-            return None
-
         market_type = detect_market_type(symbol)
-        rvol_n = RVOL_N_ASHARE if market_type == MarketType.A_SHARE else RVOL_N_CRYPTO
 
-        if len(lower_df) < rvol_n + 2:
+        # --- 15m 节拍门控 ---
+        if market_type == MarketType.A_SHARE:
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+
+            now_ts = pd.Timestamp(
+                datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+            )
+        else:
+            now_ts = pd.Timestamp.utcnow().tz_localize(None)
+
+        current_15m_ts = now_ts.floor("15min")
+
+        # 检查是否是新的15m tick
+        is_new_15m_tick = (
+            state.last_sr_break_tick_ts is None
+            or current_15m_ts > state.last_sr_break_tick_ts
+        )
+
+        if not is_new_15m_tick:
             return None
 
-        ldf = lower_df.copy()
-        ldf["vol_sma"] = ldf["volume"].rolling(rvol_n).mean()
+        # --- 获取当前价格 ---
+        if market_type == MarketType.A_SHARE:
+            # A股：从15m数据获取当前价格
+            if lower_df is None or len(lower_df) < 2:
+                return None
+            current_price = lower_df["close"].iloc[-1]
+            prev_price = state.last_sr_break_tick_price
+        else:
+            # 加密货币：从1h数据获取当前价格
+            if df is None or len(df) < 2:
+                return None
+            current_price = df["close"].iloc[-1]
+            prev_price = state.last_sr_break_tick_price
 
-        prev_bar = ldf.iloc[-2]
-        curr_bar = ldf.iloc[-3]
+        # --- 准备1h数据用于RVOL计算 ---
+        if market_type == MarketType.A_SHARE:
+            # A股：从15m聚合到1h
+            df_1h = self._aggregate_ashare_15m_to_1h(lower_df)
+            if df_1h is None or len(df_1h) < RVOL_N_ASHARE_1H + 1:
+                # 更新tick状态但不触发alert
+                state.last_sr_break_tick_ts = current_15m_ts
+                state.last_sr_break_tick_price = current_price
+                return None
+        else:
+            # 加密货币：直接使用1h数据
+            df_1h = df
+            if df_1h is None or len(df_1h) < RVOL_N_CRYPTO_1H + 1:
+                state.last_sr_break_tick_ts = current_15m_ts
+                state.last_sr_break_tick_price = current_price
+                return None
 
-        prev_close = prev_bar["close"]
-        curr_close = curr_bar["close"]
-        bar_vol = prev_bar["volume"]
-        vol_sma = prev_bar["vol_sma"]
-        bar_ts = prev_bar["timestamp"]
+        # --- 计算1h RVOL ---
+        rvol_est = self._compute_rvol_est_1h(symbol, df_1h)
 
-        if pd.isna(vol_sma) or vol_sma == 0:
+        if rvol_est is None or rvol_est < RVOL_THRESHOLD:
+            # 更新tick状态
+            state.last_sr_break_tick_ts = current_15m_ts
+            state.last_sr_break_tick_price = current_price
             return None
 
-        rvol = bar_vol / vol_sma
-
-        if (
-            state.last_sr_break_15m_ts is not None
-            and bar_ts <= state.last_sr_break_15m_ts
-        ):
+        # --- 检测突破（使用15m价格变化确认） ---
+        # 首次运行时没有prev_price，跳过
+        if prev_price is None:
+            state.last_sr_break_tick_ts = current_15m_ts
+            state.last_sr_break_tick_price = current_price
             return None
 
-        if rvol < RVOL_THRESHOLD:
-            return None
+        alert = None
 
-        if nearest_res is not None and curr_close <= nearest_res < prev_close:
-            state.last_sr_break_15m_ts = bar_ts
-            return (
+        # 突破阻力位：prev_price <= nearest_res < current_price
+        if nearest_res is not None and prev_price <= nearest_res < current_price:
+            alert = (
                 AlertMessages.TYPE_BREAKOUT_RESISTANCE_VOL,
                 AlertMessages.breakout_resistance_vol(
-                    name, prev_close, nearest_res, rvol
+                    name, current_price, nearest_res, rvol_est
                 ),
             )
 
-        if nearest_sup is not None and curr_close >= nearest_sup > prev_close:
-            state.last_sr_break_15m_ts = bar_ts
-            return (
+        # 跌破支撑位：prev_price >= nearest_sup > current_price
+        elif nearest_sup is not None and prev_price >= nearest_sup > current_price:
+            alert = (
                 AlertMessages.TYPE_BREAKDOWN_SUPPORT_VOL,
                 AlertMessages.breakdown_support_vol(
-                    name, prev_close, nearest_sup, rvol
+                    name, current_price, nearest_sup, rvol_est
                 ),
             )
 
-        return None
+        # 更新tick状态
+        state.last_sr_break_tick_ts = current_15m_ts
+        state.last_sr_break_tick_price = current_price
+
+        return alert
 
     async def close_exchange(self):
         """关闭交易所连接"""
