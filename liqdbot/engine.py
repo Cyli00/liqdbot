@@ -40,7 +40,14 @@ from .config import (
 )
 from .state import SymbolState
 from .alerts import AlertMessages
-from .providers import MarketType, detect_market_type, CryptoProvider, AkshareProvider
+from .providers import (
+    MarketType,
+    detect_market_type,
+    CryptoProvider,
+    AkshareProvider,
+    CoinbaseProvider,
+    OkxProvider,
+)
 
 
 class StrategyEngine:
@@ -49,6 +56,8 @@ class StrategyEngine:
     def __init__(self):
         self.crypto_provider = CryptoProvider()
         self.akshare_provider = AkshareProvider()
+        self.coinbase_provider = CoinbaseProvider()
+        self.okx_provider = OkxProvider()
 
         # 多标的监控: {symbol: SymbolState}
         self.symbols: dict[str, SymbolState] = {}
@@ -287,6 +296,11 @@ class StrategyEngine:
         # 加密货币不再需要15m数据（放量突破已改用1h RVOL）
         need_lower_tf = market_type == MarketType.A_SHARE
 
+        # 检查是否需要获取Coinbase数据（用于加密货币RVOL计算）
+        need_coinbase = (
+            market_type == MarketType.CRYPTO and symbol in SR_BREAKOUT_SYMBOLS
+        )
+
         lower_minutes = self._timeframe_to_minutes(lower_tf)
         main_minutes = self._timeframe_to_minutes(main_tf)
         ratio = max(1, math.ceil(main_minutes / lower_minutes))
@@ -299,19 +313,45 @@ class StrategyEngine:
         main_task = provider.fetch_ohlcv(symbol, main_tf, limit)
         htf_task = provider.fetch_ohlcv(symbol, htf_tf, htf_limit)
 
+        tasks = [main_task, htf_task]
+        task_names = ["main", "htf"]
+
         if need_lower_tf:
             lower_task = provider.fetch_ohlcv(symbol, lower_tf, lower_limit)
-            results = await asyncio.gather(
-                main_task, lower_task, htf_task, return_exceptions=True
+            tasks.append(lower_task)
+            task_names.append("lower")
+
+        if need_coinbase:
+            # 获取Coinbase BTC/USD数据用于RVOL计算
+            base_currency = symbol.split("/")[0] if "/" in symbol else symbol
+            coinbase_symbol = f"{base_currency}/USD"
+            coinbase_task = self.coinbase_provider.fetch_ohlcv(
+                coinbase_symbol, "1h", RVOL_N_CRYPTO_1H + 10
             )
-            df = results[0] if not isinstance(results[0], Exception) else None
-            lower_df = results[1] if not isinstance(results[1], Exception) else None
-            htf_df = results[2] if not isinstance(results[2], Exception) else None
-        else:
-            results = await asyncio.gather(main_task, htf_task, return_exceptions=True)
-            df = results[0] if not isinstance(results[0], Exception) else None
-            lower_df = None  # 加密货币不拉取15m数据
-            htf_df = results[1] if not isinstance(results[1], Exception) else None
+            tasks.append(coinbase_task)
+            task_names.append("coinbase")
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 解析结果
+        df = results[0] if not isinstance(results[0], Exception) else None
+        htf_df = results[1] if not isinstance(results[1], Exception) else None
+        lower_df = None
+        coinbase_df = None
+
+        for i, name in enumerate(task_names):
+            if name == "lower":
+                lower_df = results[i] if not isinstance(results[i], Exception) else None
+            elif name == "coinbase":
+                coinbase_df = (
+                    results[i] if not isinstance(results[i], Exception) else None
+                )
+
+        # 缓存Coinbase数据到state
+        if need_coinbase:
+            state = self.get_state(symbol)
+            if state is not None:
+                state.cached_coinbase_df = coinbase_df
 
         if df is None:
             return None, None, None
@@ -332,6 +372,11 @@ class StrategyEngine:
         # 加密货币不再需要15m数据（放量突破已改用1h RVOL）
         need_lower_tf = market_type == MarketType.A_SHARE
 
+        # 检查是否需要获取Coinbase数据（用于加密货币RVOL计算）
+        need_coinbase = (
+            market_type == MarketType.CRYPTO and symbol in SR_BREAKOUT_SYMBOLS
+        )
+
         INCREMENTAL_LIMIT = 10
         MAX_CACHE_SIZE = FETCH_LIMIT
 
@@ -340,56 +385,67 @@ class StrategyEngine:
         ratio = max(1, math.ceil(main_minutes / lower_minutes))
         lower_incremental_limit = INCREMENTAL_LIMIT * ratio + 10
 
-        main_task = provider.fetch_ohlcv(symbol, main_tf, INCREMENTAL_LIMIT)
-
         htf_update_interval = 1800
         need_htf_update = (
             state.last_htf_fetch_time is None
             or (time_mod.time() - state.last_htf_fetch_time) > htf_update_interval
         )
 
-        # 根据市场类型和HTF更新需求组合任务
+        # 构建任务列表
+        tasks = []
+        task_names = []
+
+        # 主周期数据
+        main_task = provider.fetch_ohlcv(symbol, main_tf, INCREMENTAL_LIMIT)
+        tasks.append(main_task)
+        task_names.append("main")
+
+        # 低周期数据（仅A股）
         if need_lower_tf:
             lower_task = provider.fetch_ohlcv(symbol, lower_tf, lower_incremental_limit)
-            if need_htf_update:
-                htf_task = provider.fetch_ohlcv(symbol, htf_tf, 5)
-                results = await asyncio.gather(
-                    main_task, lower_task, htf_task, return_exceptions=True
-                )
-                new_df = results[0] if not isinstance(results[0], Exception) else None
-                new_lower_df = (
-                    results[1] if not isinstance(results[1], Exception) else None
-                )
-                new_htf_df = (
-                    results[2] if not isinstance(results[2], Exception) else None
-                )
-                state.last_htf_fetch_time = time_mod.time()
-            else:
-                results = await asyncio.gather(
-                    main_task, lower_task, return_exceptions=True
-                )
-                new_df = results[0] if not isinstance(results[0], Exception) else None
-                new_lower_df = (
-                    results[1] if not isinstance(results[1], Exception) else None
-                )
-                new_htf_df = None
-        else:
-            # 加密货币：不拉取15m数据
-            new_lower_df = None
-            if need_htf_update:
-                htf_task = provider.fetch_ohlcv(symbol, htf_tf, 5)
-                results = await asyncio.gather(
-                    main_task, htf_task, return_exceptions=True
-                )
-                new_df = results[0] if not isinstance(results[0], Exception) else None
-                new_htf_df = (
-                    results[1] if not isinstance(results[1], Exception) else None
-                )
-                state.last_htf_fetch_time = time_mod.time()
-            else:
-                results = await asyncio.gather(main_task, return_exceptions=True)
-                new_df = results[0] if not isinstance(results[0], Exception) else None
-                new_htf_df = None
+            tasks.append(lower_task)
+            task_names.append("lower")
+
+        # 高周期数据
+        if need_htf_update:
+            htf_task = provider.fetch_ohlcv(symbol, htf_tf, 5)
+            tasks.append(htf_task)
+            task_names.append("htf")
+
+        # Coinbase数据（仅加密货币且在SR_BREAKOUT_SYMBOLS中）
+        if need_coinbase:
+            base_currency = symbol.split("/")[0] if "/" in symbol else symbol
+            coinbase_symbol = f"{base_currency}/USD"
+            coinbase_task = self.coinbase_provider.fetch_ohlcv(
+                coinbase_symbol, "1h", RVOL_N_CRYPTO_1H + 10
+            )
+            tasks.append(coinbase_task)
+            task_names.append("coinbase")
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 解析结果
+        new_df = None
+        new_lower_df = None
+        new_htf_df = None
+        new_coinbase_df = None
+
+        for i, name in enumerate(task_names):
+            result = results[i] if not isinstance(results[i], Exception) else None
+            if name == "main":
+                new_df = result
+            elif name == "lower":
+                new_lower_df = result
+            elif name == "htf":
+                new_htf_df = result
+                if result is not None:
+                    state.last_htf_fetch_time = time_mod.time()
+            elif name == "coinbase":
+                new_coinbase_df = result
+
+        # 缓存Coinbase数据
+        if need_coinbase and new_coinbase_df is not None:
+            state.cached_coinbase_df = new_coinbase_df
 
         if new_df is None:
             return state.cached_df, state.cached_lower_df, state.cached_htf_df
@@ -738,6 +794,139 @@ class StrategyEngine:
             return None, None
 
         # 取 mitigated_at 最大的（即最近被扫荡的）
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        return candidates[0][0], candidates[0][2]
+
+    def _update_swing_levels_1h(self, htf_df, state: SymbolState):
+        """
+        更新 A股 1h Swing 高低点（用于CISD的strong信号判断）
+
+        与 update_swing_levels 类似，但使用 state.swing_levels_1h
+        """
+        state.swing_levels_1h = []
+        pivot_len = self.pivot_len
+        last_idx = len(htf_df) - 1
+        start_idx = pivot_len
+        if self.hide_expired_levels:
+            start_idx = max(start_idx, last_idx - self.expiry_bars)
+
+        # 先计算 pivot 点
+        htf_df = htf_df.copy()
+        n = len(htf_df)
+        high_vals = htf_df["high"].to_numpy()
+        low_vals = htf_df["low"].to_numpy()
+        timestamps = htf_df["timestamp"].to_numpy()
+
+        is_pivot_high = np.zeros(n, dtype=bool)
+        is_pivot_low = np.zeros(n, dtype=bool)
+
+        window_size = 2 * pivot_len + 1
+        if n >= window_size:
+            for i in range(pivot_len, n - pivot_len):
+                left_max = high_vals[i - pivot_len : i].max()
+                right_max = high_vals[i + 1 : i + pivot_len + 1].max()
+                if high_vals[i] > left_max and high_vals[i] > right_max:
+                    is_pivot_high[i] = True
+
+                left_min = low_vals[i - pivot_len : i].min()
+                right_min = low_vals[i + 1 : i + pivot_len + 1].min()
+                if low_vals[i] < left_min and low_vals[i] < right_min:
+                    is_pivot_low[i] = True
+
+        end_scan_idx = len(htf_df) - pivot_len
+        for i in range(start_idx, end_scan_idx):
+            if is_pivot_high[i]:
+                state.swing_levels_1h.append(
+                    {
+                        "type": "high",
+                        "price": high_vals[i],
+                        "created_at": timestamps[i],
+                        "created_idx": i,
+                        "mitigated": False,
+                        "mitigated_at": None,
+                    }
+                )
+
+            if is_pivot_low[i]:
+                state.swing_levels_1h.append(
+                    {
+                        "type": "low",
+                        "price": low_vals[i],
+                        "created_at": timestamps[i],
+                        "created_idx": i,
+                        "mitigated": False,
+                        "mitigated_at": None,
+                    }
+                )
+
+        # 检查 Mitigation
+        check_end = last_idx
+        if check_end > 0:
+            suffix_max_high = np.empty(n, dtype=np.float64)
+            suffix_min_low = np.empty(n, dtype=np.float64)
+
+            suffix_max_high[check_end - 1] = high_vals[check_end - 1]
+            suffix_min_low[check_end - 1] = low_vals[check_end - 1]
+
+            for i in range(check_end - 2, -1, -1):
+                suffix_max_high[i] = max(high_vals[i], suffix_max_high[i + 1])
+                suffix_min_low[i] = min(low_vals[i], suffix_min_low[i + 1])
+
+            for level in state.swing_levels_1h:
+                age = last_idx - level["created_idx"]
+                if self.hide_expired_levels and age > self.expiry_bars:
+                    continue
+
+                start_check_idx = level["created_idx"] + 1
+                if start_check_idx >= check_end:
+                    continue
+
+                price = level["price"]
+
+                if level["type"] == "high":
+                    if suffix_max_high[start_check_idx] >= price:
+                        for touch_idx in range(start_check_idx, check_end):
+                            if high_vals[touch_idx] >= price:
+                                level["mitigated"] = True
+                                level["mitigated_at"] = touch_idx
+                                level["mitigated_at_ts"] = timestamps[touch_idx]
+                                break
+
+                elif level["type"] == "low":
+                    if suffix_min_low[start_check_idx] <= price:
+                        for touch_idx in range(start_check_idx, check_end):
+                            if low_vals[touch_idx] <= price:
+                                level["mitigated"] = True
+                                level["mitigated_at"] = touch_idx
+                                level["mitigated_at_ts"] = timestamps[touch_idx]
+                                break
+
+        state.swing_levels_1h = sorted(
+            state.swing_levels_1h, key=lambda x: x["created_at"]
+        )
+
+    def _find_recent_wicked_level_1h(
+        self, state: SymbolState, last_idx: int, level_type: str
+    ):
+        """
+        在 1h swing levels 的 liquidity_lookback 窗口内查找最近被扫荡的 swing level
+
+        与 _find_recent_wicked_level 类似，但使用 state.swing_levels_1h
+        """
+        candidates = []
+        for lvl in state.swing_levels_1h:
+            if lvl["type"] != level_type:
+                continue
+            mitigated_at = lvl.get("mitigated_at")
+            if mitigated_at is None:
+                continue
+            bars_since = last_idx - mitigated_at
+            if 0 <= bars_since <= self.liquidity_lookback:
+                candidates.append((bars_since, mitigated_at, lvl["price"]))
+
+        if not candidates:
+            return None, None
+
         candidates.sort(key=lambda x: x[1], reverse=True)
         return candidates[0][0], candidates[0][2]
 
@@ -1161,7 +1350,7 @@ class StrategyEngine:
 
         return None, None
 
-    def analyze_market(
+    async def analyze_market(
         self,
         symbol: str,
         state: SymbolState,
@@ -1175,6 +1364,8 @@ class StrategyEngine:
         name = display_name or symbol
         if df is None or df.empty:
             return None
+
+        market_type = detect_market_type(symbol)
 
         # 计算 4h 指标 (如果此函数被jobs调用时传入了htf_df，则在此处计算指标)
         if htf_df is not None:
@@ -1190,9 +1381,26 @@ class StrategyEngine:
         current_ts = last_candle["timestamp"]
 
         # 更新 Pivot 数据库
+        # A股：CISD基于1h数据，使用 htf_df 和 swing_levels_1h
+        # 加密货币：CISD基于1h数据，使用 df 和 swing_levels
         self.update_swing_levels(df, state)
 
-        cisd_result = self.detect_cisd(df)
+        # A股CISD检测使用1h数据（htf_df），加密货币使用主周期数据（df）
+        if market_type == MarketType.A_SHARE and htf_df is not None and len(htf_df) > 1:
+            # A股：使用1h数据进行CISD检测
+            cisd_df = htf_df
+            # 更新1h swing levels（用于A股CISD的strong信号判断）
+            self._update_swing_levels_1h(htf_df, state)
+            cisd_last_idx = len(htf_df) - 1
+            cisd_last_candle = htf_df.iloc[-1]
+            cisd_current_ts = cisd_last_candle["timestamp"]
+        else:
+            # 加密货币：使用主周期数据
+            cisd_df = df
+            cisd_last_idx = last_idx
+            cisd_current_ts = current_ts
+
+        cisd_result = self.detect_cisd(cisd_df)
 
         msgs = []
 
@@ -1226,22 +1434,31 @@ class StrategyEngine:
 
         # --- 2. CISD 策略: Normal/Strong CISD Alerts ---
         # 使用辅助方法在 liquidity_lookback 窗口内查找最近被扫荡的 swing level
-        bars_since_high, wicked_high_level = self._find_recent_wicked_level(
-            state, last_idx, "high"
-        )
-        bars_since_low, wicked_low_level = self._find_recent_wicked_level(
-            state, last_idx, "low"
-        )
+        # A股使用1h swing levels，加密货币使用主周期 swing levels
+        if market_type == MarketType.A_SHARE:
+            bars_since_high, wicked_high_level = self._find_recent_wicked_level_1h(
+                state, cisd_last_idx, "high"
+            )
+            bars_since_low, wicked_low_level = self._find_recent_wicked_level_1h(
+                state, cisd_last_idx, "low"
+            )
+        else:
+            bars_since_high, wicked_high_level = self._find_recent_wicked_level(
+                state, cisd_last_idx, "high"
+            )
+            bars_since_low, wicked_low_level = self._find_recent_wicked_level(
+                state, cisd_last_idx, "low"
+            )
 
         if cisd_result["flag_at_last"] != 0:
             # 只有当当前信号的时间戳晚于上一次记录的时间戳时才处理
-            # cisd_result['flag_at_last'] 对应的是 last_idx 的信号，即 current_ts
-            if state.last_cisd_ts is None or current_ts > state.last_cisd_ts:
+            # cisd_result['flag_at_last'] 对应的是 cisd_last_idx 的信号，即 cisd_current_ts
+            if state.last_cisd_ts is None or cisd_current_ts > state.last_cisd_ts:
                 origin_level = cisd_result["origin_level_at_last"]
                 if origin_level is None or (
                     isinstance(origin_level, float) and math.isnan(origin_level)
                 ):
-                    state.last_cisd_ts = current_ts
+                    state.last_cisd_ts = cisd_current_ts
                 else:
                     if cisd_result["flag_at_last"] == 1:
                         # 看跌 CISD：检查是否有高点扫荡且价格低于被扫荡水平
@@ -1289,7 +1506,7 @@ class StrategyEngine:
                     ):
                         msgs.append((alert_type, alert_msg))
 
-                    state.last_cisd_ts = current_ts
+                    state.last_cisd_ts = cisd_current_ts
 
         # --- 5. MACD 共振策略 ---
         # 仅当 htf_df 可用时检测
@@ -1397,8 +1614,8 @@ class StrategyEngine:
             if is_new_15m_bar:
                 state.last_macd_check_15m_ts = current_15m_ts
 
-        # --- 6. MA5/MA10 状态机检测 (A股专属) ---
-        ma_alerts = self.check_ma_alerts(symbol, df, state, name)
+        # --- 6. MA5/MA10 状态机检测 (A股专属，基于日线均线) ---
+        ma_alerts = await self.check_ma_alerts(symbol, current_price, state, name)
         msgs.extend(ma_alerts)
 
         # --- 7. 计算当前最近的支撑/阻力 ---
@@ -1444,11 +1661,19 @@ class StrategyEngine:
         state.last_analysis = result
         return result
 
-    def check_ma_alerts(
-        self, symbol: str, df, state: SymbolState, display_name: str | None = None
+    async def check_ma_alerts(
+        self,
+        symbol: str,
+        current_price: float,
+        state: SymbolState,
+        display_name: str | None = None,
     ) -> list[tuple[str, str]]:
         """
-        A股 MA5/MA10 状态机检测（15m 收盘驱动）
+        A股 MA5/MA10 状态机检测（基于日线均线，15m 收盘驱动）
+
+        修正：使用日线数据计算 MA5/MA10（5日/10日均线），而非 15m K 线
+        盘中动态计算：使用前 N-1 日收盘价 + 当日实时价格计算动态 MA
+
         - 跌破条件: close < MA * (1 - break_pct/100)
         - 站上条件: close >= MA
         - 状态机保证：跌破后不重复提醒，站上后再跌破才提醒
@@ -1456,10 +1681,6 @@ class StrategyEngine:
         name = display_name or symbol
         market_type = detect_market_type(symbol)
         if market_type != MarketType.A_SHARE:
-            return []
-
-        required_period = max(ASHARE_MA_PERIOD, ASHARE_MA10_PERIOD)
-        if df is None or len(df) < required_period:
             return []
 
         from datetime import datetime, time as dt_time, timedelta
@@ -1498,56 +1719,81 @@ class StrategyEngine:
             state.last_ma_check_15m_ts = current_15m_ts
             return []
 
-        df = df.copy()
-        df["MA5"] = df["close"].rolling(ASHARE_MA_PERIOD).mean()
-        df["MA10"] = df["close"].rolling(ASHARE_MA10_PERIOD).mean()
+        # 获取日线数据计算 MA5/MA10
+        # 需要 max(MA5, MA10) 根日线，多取几根以防数据不足
+        required_days = max(ASHARE_MA_PERIOD, ASHARE_MA10_PERIOD) + 5
+        daily_df = await self.akshare_provider.fetch_ohlcv(
+            symbol, "1d", limit=required_days
+        )
 
-        last = df.iloc[-1]
-        close_price = last["close"]
-        ma5_value = last["MA5"]
-        ma10_value = last["MA10"]
+        if daily_df is None or len(daily_df) < ASHARE_MA_PERIOD:
+            logging.debug(
+                f"[{symbol}] 日线数据不足，无法计算 MA (需要 {ASHARE_MA_PERIOD} 根)"
+            )
+            state.last_ma_check_15m_ts = current_15m_ts
+            return []
+
+        # MA 计算：使用已收盘的日线数据
+        # 日线数据的最后一根可能是"今日未收盘"的数据，需要排除
+        # MA5 = 前5个交易日的收盘价平均值（不包含今日）
+        # MA10 = 前10个交易日的收盘价平均值（不包含今日）
+        daily_closes = daily_df["close"].tolist()
+
+        # 排除最后一根（今日未收盘的数据），使用已收盘的历史数据
+        # 如果最后一根是今日数据，则使用 daily_closes[:-1]
+        historical_closes = daily_closes[:-1]
+
+        # 计算 MA5 和 MA10（基于已收盘的历史数据）
+        ma5_value = None
+        ma10_value = None
+
+        if len(historical_closes) >= ASHARE_MA_PERIOD:
+            ma5_value = sum(historical_closes[-ASHARE_MA_PERIOD:]) / ASHARE_MA_PERIOD
+
+        if len(historical_closes) >= ASHARE_MA10_PERIOD:
+            ma10_value = sum(historical_closes[-ASHARE_MA10_PERIOD:]) / ASHARE_MA10_PERIOD
 
         msgs: list[tuple[str, str]] = []
 
-        if not pd.isna(ma5_value):
+        if ma5_value is not None:
             break_threshold_ma5 = ma5_value * (1 - ASHARE_MA5_BREAK_PCT / 100)
             if not state.ma5_below:
-                if close_price < break_threshold_ma5:
+                if current_price < break_threshold_ma5:
                     state.ma5_below = True
                     msgs.append(
                         (
                             AlertMessages.TYPE_BELOW_MA5,
-                            AlertMessages.below_ma5(name, close_price, ma5_value),
+                            AlertMessages.below_ma5(name, current_price, ma5_value),
                         )
                     )
             else:
-                if close_price >= ma5_value:
+                if current_price >= ma5_value:
                     state.ma5_below = False
                     msgs.append(
                         (
                             AlertMessages.TYPE_ABOVE_MA5,
-                            AlertMessages.above_ma5(name, close_price, ma5_value),
+                            AlertMessages.above_ma5(name, current_price, ma5_value),
                         )
                     )
 
-        if not pd.isna(ma10_value):
+        if ma10_value is not None:
             break_threshold_ma10 = ma10_value * (1 - ASHARE_MA10_BREAK_PCT / 100)
             if not state.ma10_below:
-                if close_price < break_threshold_ma10:
+                if current_price < break_threshold_ma10:
                     state.ma10_below = True
                     msgs.append(
                         (
                             AlertMessages.TYPE_BELOW_MA10,
-                            AlertMessages.below_ma10(name, close_price, ma10_value),
+                            AlertMessages.below_ma10(name, current_price, ma10_value),
                         )
                     )
             else:
-                if close_price >= ma10_value:
+                if current_price >= ma10_value:
                     state.ma10_below = False
                     msgs.append(
                         (
                             AlertMessages.TYPE_ABOVE_MA10,
-                            AlertMessages.above_ma10(name, close_price, ma10_value),
+                            AlertMessages.above_ma10(name, current_price, ma10_value),
                         )
                     )
 
@@ -1701,6 +1947,86 @@ class StrategyEngine:
         # 设置下限0.25，避免刚开1h时除数过小
         return max(0.25, min(1.0, fraction))
 
+    async def _fetch_coinbase_1h_data(self, symbol: str) -> pd.DataFrame | None:
+        """
+        获取Coinbase BTC/USD的1h数据用于RVOL计算
+
+        对于加密货币标的，使用Coinbase BTC/USD的成交量作为RVOL计算基准
+        """
+        # 将symbol映射到Coinbase交易对
+        # BTC/USDT -> BTC/USD
+        base_currency = symbol.split("/")[0] if "/" in symbol else symbol
+        coinbase_symbol = f"{base_currency}/USD"
+
+        try:
+            df = await self.coinbase_provider.fetch_ohlcv(
+                coinbase_symbol, "1h", RVOL_N_CRYPTO_1H + 10
+            )
+            return df
+        except Exception as e:
+            logging.warning(f"[{symbol}] 获取Coinbase {coinbase_symbol} 数据失败: {e}")
+            return None
+
+    async def fetch_spot_premium(self, symbol: str) -> dict | None:
+        """
+        计算现货溢价: (Coinbase BTC/USD - OKX BTC/USDT) / Coinbase BTC/USD
+
+        返回:
+            {
+                "coinbase_price": float,  # Coinbase BTC/USD 价格
+                "okx_price": float,        # OKX BTC/USDT 价格
+                "premium_pct": float,      # 溢价百分比
+                "coinbase_symbol": str,    # Coinbase交易对
+                "okx_symbol": str,         # OKX交易对
+            }
+        """
+        market_type = detect_market_type(symbol)
+        if market_type != MarketType.CRYPTO:
+            return None
+
+        # 将symbol映射到对应交易对
+        base_currency = symbol.split("/")[0] if "/" in symbol else symbol
+        coinbase_symbol = f"{base_currency}/USD"
+        okx_symbol = f"{base_currency}/USDT"
+
+        try:
+            # 并发获取两个交易所的ticker
+            coinbase_ticker, okx_ticker = await asyncio.gather(
+                self.coinbase_provider.fetch_ticker(coinbase_symbol),
+                self.okx_provider.fetch_ticker(okx_symbol),
+                return_exceptions=True,
+            )
+
+            if isinstance(coinbase_ticker, Exception) or coinbase_ticker is None:
+                logging.warning(f"[{symbol}] 获取Coinbase {coinbase_symbol} ticker失败")
+                return None
+
+            if isinstance(okx_ticker, Exception) or okx_ticker is None:
+                logging.warning(f"[{symbol}] 获取OKX {okx_symbol} ticker失败")
+                return None
+
+            coinbase_price = coinbase_ticker.get("last")
+            okx_price = okx_ticker.get("last")
+
+            if coinbase_price is None or okx_price is None:
+                return None
+
+            if coinbase_price == 0:
+                return None
+
+            premium_pct = (coinbase_price - okx_price) / coinbase_price * 100
+
+            return {
+                "coinbase_price": coinbase_price,
+                "okx_price": okx_price,
+                "premium_pct": premium_pct,
+                "coinbase_symbol": coinbase_symbol,
+                "okx_symbol": okx_symbol,
+            }
+        except Exception as e:
+            logging.exception(f"[{symbol}] 计算现货溢价失败: {e}")
+            return None
+
     def _compute_rvol_est_1h(
         self, symbol: str, df_1h, current_1h_volume: float | None = None
     ) -> float | None:
@@ -1823,8 +2149,10 @@ class StrategyEngine:
                 state.last_sr_break_tick_price = current_price
                 return None
         else:
-            # 加密货币：直接使用1h数据
-            df_1h = df
+            # 加密货币：优先使用Coinbase BTC/USD数据计算RVOL
+            df_1h = (
+                state.cached_coinbase_df if state.cached_coinbase_df is not None else df
+            )
             if df_1h is None or len(df_1h) < RVOL_N_CRYPTO_1H + 1:
                 state.last_sr_break_tick_ts = current_15m_ts
                 state.last_sr_break_tick_price = current_price
@@ -1875,6 +2203,8 @@ class StrategyEngine:
     async def close_exchange(self):
         """关闭交易所连接"""
         await self.crypto_provider.close()
+        await self.coinbase_provider.close()
+        await self.okx_provider.close()
 
 
 # 全局引擎实例
