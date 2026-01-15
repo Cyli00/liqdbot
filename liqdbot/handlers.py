@@ -181,22 +181,22 @@ async def list_symbols_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 def get_alert_short_name(alert_type: str) -> str:
     mapping = {
-        AlertMessages.TYPE_SWING_HIGH_MITIGATION: "Swing High",
-        AlertMessages.TYPE_SWING_LOW_MITIGATION: "Swing Low",
-        AlertMessages.TYPE_BEARISH_NORMAL_CISD: "Bear CISD",
-        AlertMessages.TYPE_BULLISH_NORMAL_CISD: "Bull CISD",
-        AlertMessages.TYPE_BEARISH_STRONG_CISD: "Strong Bear",
-        AlertMessages.TYPE_BULLISH_STRONG_CISD: "Strong Bull",
-        AlertMessages.TYPE_MACD_RESONANCE_GOLDEN: "MACD Gold",
-        AlertMessages.TYPE_MACD_RESONANCE_DEATH: "MACD Death",
-        AlertMessages.TYPE_BELOW_MA5: "Below MA5",
-        AlertMessages.TYPE_ABOVE_MA5: "Above MA5",
-        AlertMessages.TYPE_BELOW_MA10: "Below MA10",
-        AlertMessages.TYPE_ABOVE_MA10: "Above MA10",
-        AlertMessages.TYPE_BREAKOUT_RESISTANCE_VOL: "Vol Breakout",
-        AlertMessages.TYPE_BREAKDOWN_SUPPORT_VOL: "Vol Breakdown",
+        AlertMessages.TYPE_SWING_HIGH_MITIGATION: "高点回撤",
+        AlertMessages.TYPE_SWING_LOW_MITIGATION: "低点反弹",
+        AlertMessages.TYPE_BEARISH_NORMAL_CISD: "看跌CISD",
+        AlertMessages.TYPE_BULLISH_NORMAL_CISD: "看涨CISD",
+        AlertMessages.TYPE_BEARISH_STRONG_CISD: "强看跌",
+        AlertMessages.TYPE_BULLISH_STRONG_CISD: "强看涨",
+        AlertMessages.TYPE_MACD_RESONANCE_GOLDEN: "MACD金叉",
+        AlertMessages.TYPE_MACD_RESONANCE_DEATH: "MACD死叉",
+        AlertMessages.TYPE_BELOW_MA5: "跌破MA5",
+        AlertMessages.TYPE_ABOVE_MA5: "站上MA5",
+        AlertMessages.TYPE_BELOW_MA10: "跌破MA10",
+        AlertMessages.TYPE_ABOVE_MA10: "站上MA10",
+        AlertMessages.TYPE_BREAKOUT_RESISTANCE_VOL: "放量突破",
+        AlertMessages.TYPE_BREAKDOWN_SUPPORT_VOL: "放量跌破",
     }
-    return mapping.get(alert_type, "Signal")
+    return mapping.get(alert_type, "信号")
 
 
 async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -> dict:
@@ -241,7 +241,7 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
 
             analyze_start = time.perf_counter_ns() // 1_000_000
             display_name = await engine.get_symbol_display_name(symbol)
-            res = engine.analyze_market(
+            res = await engine.analyze_market(
                 symbol, state, df, htf_df, lower_df, display_name
             )
             result["analyze_ms"] = (time.perf_counter_ns() // 1_000_000) - analyze_start
@@ -253,8 +253,8 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
                 result["msg"] = f"❌ **{symbol}** 分析失败"
                 return result
 
-            res_val = f"`{res['nearest_res']:.2f}`" if res["nearest_res"] else "None"
-            sup_val = f"`{res['nearest_sup']:.2f}`" if res["nearest_sup"] else "None"
+            res_val = f"`{res['nearest_res']:.2f}`" if res["nearest_res"] else "无"
+            sup_val = f"`{res['nearest_sup']:.2f}`" if res["nearest_sup"] else "无"
             price_str = f"{res['price']:,.2f}"
 
             display_symbol = res["symbol"]
@@ -269,7 +269,7 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
 
             extras = []
             if res.get("rvol_15m") is not None:
-                extras.append(f"Vol: `{res['rvol_15m']:.1f}x`")
+                extras.append(f"量比: `{res['rvol_15m']:.1f}x`")
 
             if res["alerts"]:
                 alert_names = [get_alert_short_name(a[0]) for a in res["alerts"]]
@@ -379,7 +379,7 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     current_time_str = datetime.now(timezone.utc).strftime("%H:%M UTC")
     final_msg = "\n\n".join(all_msgs)
-    final_msg = f"📋 **Market Status** ({current_time_str})\n\n{final_msg}"
+    final_msg = f"📋 **行情状态** ({current_time_str})\n\n{final_msg}"
 
     if should_post_to_channel:
         try:

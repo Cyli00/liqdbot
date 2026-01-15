@@ -158,3 +158,5 @@ class SymbolState:
         # --- MACD A股日内去重 ---
         # 格式: "YYYY-MM-DD"，当天已触发后不再重复
         self.last_macd_alert_date: str | None = None
+        # --- Coinbase数据缓存（用于加密货币RVOL计算）---
+        self.cached_coinbase_df = None

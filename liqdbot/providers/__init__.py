@@ -5,6 +5,8 @@
 from .base import DataProvider, MarketType, detect_market_type
 from .crypto import CryptoProvider
 from .akshare import AkshareProvider, is_akshare_trading_time
+from .coinbase import CoinbaseProvider
+from .okx import OkxProvider
 
 __all__ = [
     "DataProvider",
@@ -13,4 +15,6 @@ __all__ = [
     "CryptoProvider",
     "AkshareProvider",
     "is_akshare_trading_time",
+    "CoinbaseProvider",
+    "OkxProvider",
 ]

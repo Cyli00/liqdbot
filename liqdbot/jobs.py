@@ -151,23 +151,25 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
         try:
             df = engine.calculate_indicators(df, lower_df)
             display_name = await engine.get_symbol_display_name(symbol)
-            res = engine.analyze_market(symbol, state, df, htf_df, lower_df, display_name)
+            res = await engine.analyze_market(
+                symbol, state, df, htf_df, lower_df, display_name
+            )
         except Exception as e:
             logger.exception(
                 f"event=market_analyze_error run={run_id} symbol={symbol} err={e}"
             )
             continue
 
-        if res and res["alerts"]:
-            for alert_type, alert_msg in res["alerts"]:
-                if state.can_send_alert(alert_type):
-                    all_alerts.append((state, alert_type, alert_msg))
-                else:
-                    cooldown_skipped += 1
-                    logger.debug(
-                        f"event=alert_cooldown_skip run={run_id} symbol={symbol} "
-                        f"alert_type={alert_type}"
-                    )
+    if res and res["alerts"]:
+        for alert_type, alert_msg in res["alerts"]:
+            if state.can_send_alert(alert_type):
+                all_alerts.append((state, symbol, alert_type, alert_msg))
+            else:
+                cooldown_skipped += 1
+                logger.debug(
+                    f"event=alert_cooldown_skip run={run_id} symbol={symbol} "
+                    f"alert_type={alert_type}"
+                )
 
     analyze_duration_ms = (time.perf_counter_ns() // 1_000_000) - analyze_start_ms
 
@@ -180,8 +182,32 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
     sent_ok = 0
     sent_fail = 0
 
-    for state, alert_type, alert_msg in all_alerts:
-        success = await send_telegram_with_retry(context.bot, TG_CHAT_ID, alert_msg)
+    for state, symbol, alert_type, alert_msg in all_alerts:
+        # 对加密货币警报添加现货溢价信息
+        final_msg = alert_msg
+        market_type = detect_market_type(symbol)
+        if market_type == MarketType.CRYPTO:
+            try:
+                premium_info = await engine.fetch_spot_premium(symbol)
+                if premium_info is not None:
+                    premium_pct = premium_info["premium_pct"]
+                    coinbase_symbol = premium_info["coinbase_symbol"]
+                    okx_symbol = premium_info["okx_symbol"]
+                    coinbase_price = premium_info["coinbase_price"]
+                    okx_price = premium_info["okx_price"]
+                    premium_sign = "+" if premium_pct >= 0 else ""
+                    final_msg += (
+                        f"\n\n💱 **现货溢价**\n"
+                        f"Coinbase `{coinbase_symbol}`: `{coinbase_price:,.2f}`\n"
+                        f"OKX `{okx_symbol}`: `{okx_price:,.2f}`\n"
+                        f"溢价: `{premium_sign}{premium_pct:.3f}%`"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"event=fetch_spot_premium_error symbol={symbol} err={e}"
+                )
+
+        success = await send_telegram_with_retry(context.bot, TG_CHAT_ID, final_msg)
         if success:
             state.mark_alert_sent(alert_type)
             sent_ok += 1

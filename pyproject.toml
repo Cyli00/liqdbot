@@ -12,6 +12,7 @@ dependencies = [
     "pandas-ta>=0.4.71b0",
     "python-dotenv>=1.2.1",
     "python-telegram-bot[job-queue]>=22.5",
+    "yfinance>=1.0",
 ]
 
 [dependency-groups]
