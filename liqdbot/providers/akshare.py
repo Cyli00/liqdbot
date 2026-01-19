@@ -13,16 +13,10 @@ logger = logging.getLogger(__name__)
 SHANGHAI_TZ = ZoneInfo("Asia/Shanghai")
 
 TIMEFRAME_MAP = {
-    "1m": "1",
-    "5m": "5",
     "15m": "15",
-    "30m": "30",
     "1h": "60",
     "60m": "60",
-    "4h": "240",
     "1d": "daily",
-    "1w": "weekly",
-    "1M": "monthly",
 }
 
 

@@ -20,8 +20,8 @@ from .config import (
     HIDE_EXPIRED_LEVELS,
     HIDE_MITIGATED_LEVELS,
     CISD_TOLERANCE,
-    ASHARE_CISD_TOLERANCE,
-    ASHARE_LIQUIDITY_LOOKBACK,
+    AKSHARE_CISD_TOLERANCE,
+    AKSHARE_LIQUIDITY_LOOKBACK,
     DEFAULT_ASHARE_SYMBOLS,
     ASHARE_TIMEFRAME,
     ASHARE_HTF_TIMEFRAME,
@@ -82,8 +82,8 @@ class StrategyEngine:
         self.cisd_tolerance = CISD_TOLERANCE
 
         # A股专用参数
-        self.ashare_cisd_tolerance = ASHARE_CISD_TOLERANCE
-        self.ashare_liquidity_lookback = ASHARE_LIQUIDITY_LOOKBACK
+        self.AKSHARE_CISD_TOLERANCE = AKSHARE_CISD_TOLERANCE
+        self.AKSHARE_LIQUIDITY_LOOKBACK = AKSHARE_LIQUIDITY_LOOKBACK
 
         self.htf_timeframe = "4h"  # 高周期固定为 4h
 
@@ -868,7 +868,7 @@ class StrategyEngine:
 
         # A股使用专用的 tolerance 参数
         if market_type == MarketType.A_SHARE:
-            cisd_tolerance = self.ashare_cisd_tolerance
+            cisd_tolerance = self.AKSHARE_CISD_TOLERANCE
         else:
             cisd_tolerance = self.cisd_tolerance
 
@@ -916,7 +916,7 @@ class StrategyEngine:
         # A股和加密货币都使用主周期 swing levels
         # A股使用专用的 liquidity_lookback 参数
         if market_type == MarketType.A_SHARE:
-            liquidity_lookback = self.ashare_liquidity_lookback
+            liquidity_lookback = self.AKSHARE_LIQUIDITY_LOOKBACK
         else:
             liquidity_lookback = self.liquidity_lookback
 

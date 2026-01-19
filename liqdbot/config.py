@@ -67,8 +67,8 @@ HIDE_MITIGATED_LEVELS = getenv_bool("HIDE_MITIGATED_LEVELS", "false")
 CISD_TOLERANCE = float(os.getenv("CISD_TOLERANCE", "0.7"))
 
 # --- A股 CISD 专用参数 ---
-ASHARE_CISD_TOLERANCE = float(os.getenv("ASHARE_CISD_TOLERANCE", "0.75"))  # A股 15m CISD 提高容忍度过滤噪声
-ASHARE_LIQUIDITY_LOOKBACK = int(os.getenv("ASHARE_LIQUIDITY_LOOKBACK", "10"))  # 10 根 15m ≈ 2.5 小时
+AKSHARE_CISD_TOLERANCE = float(os.getenv("AKSHARE_CISD_TOLERANCE", "0.75"))  # A股 15m CISD 提高容忍度过滤噪声
+AKSHARE_LIQUIDITY_LOOKBACK = int(os.getenv("AKSHARE_LIQUIDITY_LOOKBACK", "10"))  # 10 根 15m ≈ 2.5 小时
 
 # --- 网络配置 ---
 MAX_RETRIES = 3
