@@ -11,11 +11,11 @@ import pandas as pd
 
 from ..alerts import AlertMessages
 from ..config import (
-    ASHARE_MA_PERIOD,
-    ASHARE_MA5_BREAK_PCT,
-    ASHARE_MA10_PERIOD,
-    ASHARE_MA10_BREAK_PCT,
-    ASHARE_OPEN_COOLDOWN_BARS,
+    AKSHARE_MA_PERIOD,
+    AKSHARE_MA5_BREAK_PCT,
+    AKSHARE_MA10_PERIOD,
+    AKSHARE_MA10_BREAK_PCT,
+    AKSHARE_OPEN_COOLDOWN_BARS,
 )
 from ..providers.base import MarketType, detect_market_type
 
@@ -31,11 +31,11 @@ async def check_ma_alerts(
     display_name: str | None = None,
     *,
     akshare_provider: "AkshareProvider",
-    ma5_period: int = ASHARE_MA_PERIOD,
-    ma5_break_pct: float = ASHARE_MA5_BREAK_PCT,
-    ma10_period: int = ASHARE_MA10_PERIOD,
-    ma10_break_pct: float = ASHARE_MA10_BREAK_PCT,
-    open_cooldown_bars: int = ASHARE_OPEN_COOLDOWN_BARS,
+    ma5_period: int = AKSHARE_MA_PERIOD,
+    ma5_break_pct: float = AKSHARE_MA5_BREAK_PCT,
+    ma10_period: int = AKSHARE_MA10_PERIOD,
+    ma10_break_pct: float = AKSHARE_MA10_BREAK_PCT,
+    open_cooldown_bars: int = AKSHARE_OPEN_COOLDOWN_BARS,
 ) -> list[tuple[str, str]]:
     """
     A股 MA5/MA10 状态机检测（基于日线均线，15m 收盘驱动）

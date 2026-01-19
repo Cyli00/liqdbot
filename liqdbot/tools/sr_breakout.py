@@ -10,7 +10,7 @@ import pandas as pd
 from ..alerts import AlertMessages
 from ..config import (
     SR_BREAKOUT_SYMBOLS,
-    RVOL_N_ASHARE_1H,
+    RVOL_N_AKSHARE_1H,
     RVOL_N_CRYPTO_1H,
     RVOL_THRESHOLD,
 )
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from ..state import SymbolState
 
 
-def _aggregate_ashare_15m_to_1h(lower_df: pd.DataFrame) -> pd.DataFrame | None:
+def _aggregate_akshare_15m_to_1h(lower_df: pd.DataFrame) -> pd.DataFrame | None:
     """
     将A股15m K线聚合为1h K线（按交易时段桶）
 
@@ -162,7 +162,7 @@ def _compute_rvol_est_1h(
         return None
 
     market_type = detect_market_type(symbol)
-    rvol_n = RVOL_N_ASHARE_1H if market_type == MarketType.A_SHARE else RVOL_N_CRYPTO_1H
+    rvol_n = RVOL_N_AKSHARE_1H if market_type == MarketType.A_SHARE else RVOL_N_CRYPTO_1H
 
     if len(df_1h) < rvol_n + 1:
         return None
@@ -264,8 +264,8 @@ def check_sr_breakout_vol(
     # --- 准备1h数据用于RVOL计算 ---
     if market_type == MarketType.A_SHARE:
         # A股：从15m聚合到1h
-        df_1h = _aggregate_ashare_15m_to_1h(lower_df)
-        if df_1h is None or len(df_1h) < RVOL_N_ASHARE_1H + 1:
+        df_1h = _aggregate_akshare_15m_to_1h(lower_df)
+        if df_1h is None or len(df_1h) < RVOL_N_AKSHARE_1H + 1:
             # 更新tick状态但不触发alert
             state.last_sr_break_tick_ts = current_15m_ts
             state.last_sr_break_tick_price = current_price

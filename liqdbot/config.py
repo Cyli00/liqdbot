@@ -88,36 +88,36 @@ MACD_RESONANCE_MAX_GAP_MULTIPLIER = float(
 )
 
 # --- A股配置 ---
-DEFAULT_ASHARE_SYMBOL = os.getenv("ASHARE_SYMBOL", "sh000001")  # 默认上证指数
+DEFAULT_AKSHARE_SYMBOL = os.getenv("AKSHARE_SYMBOL", "sh000001")  # 默认上证指数
 # 默认监控的 A 股标的列表
-DEFAULT_ASHARE_SYMBOLS = [
+DEFAULT_AKSHARE_SYMBOLS = [
     "sh000001",  # 上证指数
     "sh000688",  # 科创50
     "sz399006",  # 创业板指
 ]
-ASHARE_TIMEFRAME = "15m"  # A股主周期改为15m，用于MACD共振低周期
-ASHARE_HTF_TIMEFRAME = "60m"  # MACD 共振高周期
-ASHARE_LTF_TIMEFRAME = "15m"  # MACD 共振低周期（与主周期一致）
-ASHARE_LOWER_TIMEFRAME = "15m"  # 上下行量计算
-ASHARE_MA_PERIOD = 5  # 5日均线
-ASHARE_MA5_BREAK_PCT = float(
-    os.getenv("ASHARE_MA5_BREAK_PCT", "1.0")
+AKSHARE_TIMEFRAME = "15m"  # A股主周期改为15m，用于MACD共振低周期
+AKSHARE_HTF_TIMEFRAME = "60m"  # MACD 共振高周期
+AKSHARE_LTF_TIMEFRAME = "15m"  # MACD 共振低周期（与主周期一致）
+AKSHARE_LOWER_TIMEFRAME = "15m"  # 上下行量计算
+AKSHARE_MA_PERIOD = 5  # 5日均线
+AKSHARE_MA5_BREAK_PCT = float(
+    os.getenv("AKSHARE_MA5_BREAK_PCT", "1.0")
 )  # MA5 跌破阈值 (%)
-ASHARE_MA10_PERIOD = 10  # 10日均线
-ASHARE_MA10_BREAK_PCT = float(
-    os.getenv("ASHARE_MA10_BREAK_PCT", "1.0")
+AKSHARE_MA10_PERIOD = 10  # 10日均线
+AKSHARE_MA10_BREAK_PCT = float(
+    os.getenv("AKSHARE_MA10_BREAK_PCT", "1.0")
 )  # MA10 跌破阈值 (%)
-ASHARE_OPEN_COOLDOWN_BARS = 2  # 开盘后跳过前N根K线的MACD共振检测
+AKSHARE_OPEN_COOLDOWN_BARS = 2  # 开盘后跳过前N根K线的MACD共振检测
 
 # --- 放量突破/跌破配置 (1h RVOL, 15m 确认) ---
 # 仅对以下标的启用（规范化后匹配）
 SR_BREAKOUT_SYMBOLS = {"BTC/USDT", "sh000001"}
 # RVOL 1H = current_1h_vol / SMA(prev_1h_vol, N)，N 按标的分别设定
 RVOL_N_CRYPTO_1H = int(os.getenv("RVOL_N_CRYPTO_1H", "24"))  # BTC: 24 根 1h ≈ 24h
-RVOL_N_ASHARE_1H = int(
-    os.getenv("RVOL_N_ASHARE_1H", "12")
+RVOL_N_AKSHARE_1H = int(
+    os.getenv("RVOL_N_AKSHARE_1H", "12")
 )  # 上证: 12 根 1h ≈ 3 个交易日 * 4h
 RVOL_THRESHOLD = float(os.getenv("RVOL_THRESHOLD", "2.0"))  # 放量阈值
 # 保留旧配置用于兼容（可后续移除）
 RVOL_N_CRYPTO = int(os.getenv("RVOL_N_CRYPTO", "96"))
-RVOL_N_ASHARE = int(os.getenv("RVOL_N_ASHARE", "48"))
+RVOL_N_AKSHARE = int(os.getenv("RVOL_N_AKSHARE", "48"))

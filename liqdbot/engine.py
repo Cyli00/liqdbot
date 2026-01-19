@@ -22,19 +22,19 @@ from .config import (
     CISD_TOLERANCE,
     AKSHARE_CISD_TOLERANCE,
     AKSHARE_LIQUIDITY_LOOKBACK,
-    DEFAULT_ASHARE_SYMBOLS,
-    ASHARE_TIMEFRAME,
-    ASHARE_HTF_TIMEFRAME,
-    ASHARE_LTF_TIMEFRAME,
-    ASHARE_LOWER_TIMEFRAME,
-    ASHARE_MA_PERIOD,
-    ASHARE_MA5_BREAK_PCT,
-    ASHARE_MA10_PERIOD,
-    ASHARE_MA10_BREAK_PCT,
-    ASHARE_OPEN_COOLDOWN_BARS,
+    DEFAULT_AKSHARE_SYMBOLS,
+    AKSHARE_TIMEFRAME,
+    AKSHARE_HTF_TIMEFRAME,
+    AKSHARE_LTF_TIMEFRAME,
+    AKSHARE_LOWER_TIMEFRAME,
+    AKSHARE_MA_PERIOD,
+    AKSHARE_MA5_BREAK_PCT,
+    AKSHARE_MA10_PERIOD,
+    AKSHARE_MA10_BREAK_PCT,
+    AKSHARE_OPEN_COOLDOWN_BARS,
     SR_BREAKOUT_SYMBOLS,
     RVOL_N_CRYPTO,
-    RVOL_N_ASHARE,
+    RVOL_N_AKSHARE,
     RVOL_N_CRYPTO_1H,
 )
 from .state import SymbolState
@@ -93,9 +93,9 @@ class StrategyEngine:
             logging.info(f"初始化引擎: 默认监控 {DEFAULT_SYMBOL}")
 
         # 添加默认 A 股标的列表
-        for ashare_symbol in DEFAULT_ASHARE_SYMBOLS:
-            self.add_symbol(ashare_symbol)
-            logging.info(f"初始化引擎: 默认监控 A股 {ashare_symbol}")
+        for akshare_symbol in DEFAULT_AKSHARE_SYMBOLS:
+            self.add_symbol(akshare_symbol)
+            logging.info(f"初始化引擎: 默认监控 A股 {akshare_symbol}")
 
     def add_symbol(self, symbol: str) -> bool:
         """添加新的监控标的"""
@@ -148,10 +148,10 @@ class StrategyEngine:
         market_type = detect_market_type(symbol)
         if market_type == MarketType.A_SHARE:
             return {
-                "main": ASHARE_TIMEFRAME,
-                "lower": ASHARE_LOWER_TIMEFRAME,
-                "htf": ASHARE_HTF_TIMEFRAME,
-                "ltf": ASHARE_LTF_TIMEFRAME,
+                "main": AKSHARE_TIMEFRAME,
+                "lower": AKSHARE_LOWER_TIMEFRAME,
+                "htf": AKSHARE_HTF_TIMEFRAME,
+                "ltf": AKSHARE_LTF_TIMEFRAME,
             }
         return {
             "main": TIMEFRAME,
@@ -1117,7 +1117,7 @@ class StrategyEngine:
                 morning_open = dt_time(9, 30)
                 afternoon_open = dt_time(13, 0)
                 # 冷却期结束时间（开盘后 N 根 15m K线）
-                cooldown_minutes = ASHARE_OPEN_COOLDOWN_BARS * 15
+                cooldown_minutes = AKSHARE_OPEN_COOLDOWN_BARS * 15
                 # 使用 timedelta 正确计算时间
                 morning_cooldown_end = (
                     dt_datetime.combine(dt_datetime.today(), morning_open)
@@ -1291,11 +1291,11 @@ class StrategyEngine:
             state,
             name,
             akshare_provider=self.akshare_provider,
-            ma5_period=ASHARE_MA_PERIOD,
-            ma5_break_pct=ASHARE_MA5_BREAK_PCT,
-            ma10_period=ASHARE_MA10_PERIOD,
-            ma10_break_pct=ASHARE_MA10_BREAK_PCT,
-            open_cooldown_bars=ASHARE_OPEN_COOLDOWN_BARS,
+            ma5_period=AKSHARE_MA_PERIOD,
+            ma5_break_pct=AKSHARE_MA5_BREAK_PCT,
+            ma10_period=AKSHARE_MA10_PERIOD,
+            ma10_break_pct=AKSHARE_MA10_BREAK_PCT,
+            open_cooldown_bars=AKSHARE_OPEN_COOLDOWN_BARS,
         )
         msgs.extend(ma_alerts)
 
@@ -1350,7 +1350,7 @@ class StrategyEngine:
             return None
 
         market_type = detect_market_type(symbol)
-        rvol_n = RVOL_N_ASHARE if market_type == MarketType.A_SHARE else RVOL_N_CRYPTO
+        rvol_n = RVOL_N_AKSHARE if market_type == MarketType.A_SHARE else RVOL_N_CRYPTO
 
         if len(lower_df) < rvol_n + 2:
             return None

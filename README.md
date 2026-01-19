@@ -11,7 +11,7 @@
 ### Features
 - **Multi-Market Support**: Crypto (via `ccxt`) and China A-shares (via `akshare`)
 - **Auto Symbol Detection**: Automatically identifies market type from symbol format
-- **Multi-Timeframe Analysis**: MACD resonance across 1h/4h (crypto) or 15m/60m (A-shares)
+- **Multi-Timeframe Analysis**: MACD resonance across 1h/4h (crypto) or 15m/60m (A-shares), with optional time-gap window
 - **A-Share Trading Hours**: Only monitors during Beijing time 9:30-11:30, 13:00-15:00
 - **Smart Alerting**: Cooldowns to prevent alert spam
 
@@ -54,14 +54,17 @@
 
    # A-Share Config
    AKSHARE_SYMBOL=sh000001      # SSE Composite Index
-   AKSHARE_TF_SHORT=15m
-   AKSHARE_TF_LONG=60m
-   AKSHARE_MA5_PERIOD=5
 
    # Strategy Params
    PIVOT_LEN=12
    EXPIRY_BARS=100
    LIQUIDITY_LOOKBACK=10
+
+   # MACD Resonance (optional)
+   # Enforce time-gap window between LTF/HTF crosses to qualify as resonance
+   MACD_RESONANCE_ENFORCE_TIME_GAP=false
+   # Window = HTF length (hours) * multiplier
+   MACD_RESONANCE_MAX_GAP_MULTIPLIER=1.0
    ```
 
 ### Usage
@@ -215,7 +218,7 @@ sudo journalctl -u liqdbot.service -f
 ### 功能特性
 - **多市场支持**：加密货币（ccxt）和 A股（akshare）
 - **自动识别标的**：根据 symbol 格式自动判断市场类型
-- **多周期分析**：MACD 共振检测（加密货币 1h/4h，A股 15m/60m）
+- **多周期分析**：MACD 共振检测（加密货币 1h/4h，A股 15m/60m），支持交叉时间窗口过滤
 - **A股交易时段**：仅在北京时间 9:30-11:30、13:00-15:00 监控
 - **智能报警**：冷却机制防止刷屏
 
@@ -258,14 +261,17 @@ sudo journalctl -u liqdbot.service -f
 
    # A股配置
    AKSHARE_SYMBOL=sh000001      # 上证指数
-   AKSHARE_TF_SHORT=15m
-   AKSHARE_TF_LONG=60m
-   AKSHARE_MA5_PERIOD=5
 
    # 策略参数
    PIVOT_LEN=12
    EXPIRY_BARS=100
    LIQUIDITY_LOOKBACK=10
+
+   # MACD 共振（可选）
+   # 是否强制要求 LTF/HTF 交叉时间在共振窗口内才触发
+   MACD_RESONANCE_ENFORCE_TIME_GAP=false
+   # 窗口 = HTF 周期小时数 * 倍数
+   MACD_RESONANCE_MAX_GAP_MULTIPLIER=1.0
    ```
 
 ### 使用方法
@@ -423,5 +429,5 @@ liqdbot/
 │   └── providers/    # 数据源抽象
 │       ├── base.py   # DataProvider 基类
 │       ├── crypto.py # 加密货币 (ccxt)
-│       └── ashare.py # A股 (akshare)
+│       └── akshare.py # A股 (akshare)
 ```
