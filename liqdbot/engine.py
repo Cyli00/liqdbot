@@ -8,7 +8,6 @@ import re
 import logging
 import numpy as np
 import pandas as pd
-import pandas_ta as ta
 
 from .config import (
     DEFAULT_SYMBOL,
@@ -21,6 +20,8 @@ from .config import (
     HIDE_EXPIRED_LEVELS,
     HIDE_MITIGATED_LEVELS,
     CISD_TOLERANCE,
+    ASHARE_CISD_TOLERANCE,
+    ASHARE_LIQUIDITY_LOOKBACK,
     DEFAULT_ASHARE_SYMBOLS,
     ASHARE_TIMEFRAME,
     ASHARE_HTF_TIMEFRAME,
@@ -51,6 +52,11 @@ from .tools import (
     check_macd_resonance,
     check_ma_alerts,
     check_sr_breakout_vol,
+    macd_with_sma_signal,
+    calculate_macd_indicators,
+    calculate_htf_indicators as calc_htf_indicators,
+    calculate_pivot_points,
+    calculate_up_down_volume,
 )
 
 
@@ -74,6 +80,10 @@ class StrategyEngine:
         self.hide_expired_levels = HIDE_EXPIRED_LEVELS
         self.hide_mitigated_levels = HIDE_MITIGATED_LEVELS
         self.cisd_tolerance = CISD_TOLERANCE
+
+        # A股专用参数
+        self.ashare_cisd_tolerance = ASHARE_CISD_TOLERANCE
+        self.ashare_liquidity_lookback = ASHARE_LIQUIDITY_LOOKBACK
 
         self.htf_timeframe = "4h"  # 高周期固定为 4h
 
@@ -204,18 +214,7 @@ class StrategyEngine:
 
     @staticmethod
     def _macd_with_sma_signal(series, fast: int = 12, slow: int = 26, signal: int = 9):
-        fast_ma = ta.ema(series, length=fast)
-        slow_ma = ta.ema(series, length=slow)
-        if fast_ma is None or slow_ma is None:
-            return None, None, None
-
-        macd_series = fast_ma - slow_ma
-        signal_series = ta.sma(macd_series, length=signal)
-        if signal_series is None:
-            return None, None, None
-
-        hist_series = macd_series - signal_series
-        return macd_series, signal_series, hist_series
+        return macd_with_sma_signal(series, fast, slow, signal)
 
     async def fetch_data(
         self,
@@ -315,7 +314,12 @@ class StrategyEngine:
         htf_limit = max(100, int(limit / ratio_htf) + 20)
 
         main_task = provider.fetch_ohlcv(symbol, main_tf, limit)
-        htf_task = provider.fetch_ohlcv(symbol, htf_tf, htf_limit)
+        # A股不再需要单独的 htf 数据（CISD 改用 15m）
+        # 加密货币仍使用 htf 用于其他分析
+        if market_type == MarketType.A_SHARE:
+            htf_task = provider.fetch_ohlcv(symbol, htf_tf, htf_limit)
+        else:
+            htf_task = provider.fetch_ohlcv(symbol, htf_tf, htf_limit)
 
         tasks = [main_task, htf_task]
         task_names = ["main", "htf"]
@@ -350,6 +354,10 @@ class StrategyEngine:
                 coinbase_df = (
                     results[i] if not isinstance(results[i], Exception) else None
                 )
+                if isinstance(results[i], Exception):
+                    logging.warning(
+                        f"[{symbol}] Coinbase 数据获取失败，使用 Binance 数据作为 RVOL 备选"
+                    )
 
         # 缓存Coinbase数据到state
         if need_coinbase:
@@ -446,6 +454,10 @@ class StrategyEngine:
                     state.last_htf_fetch_time = time_mod.time()
             elif name == "coinbase":
                 new_coinbase_df = result
+                if isinstance(results[i], Exception):
+                    logging.debug(
+                        f"[{symbol}] Coinbase 增量数据获取失败，将使用缓存或 Binance 数据"
+                    )
 
         # 缓存Coinbase数据
         if need_coinbase and new_coinbase_df is not None:
@@ -482,125 +494,38 @@ class StrategyEngine:
 
         return merged_df, merged_lower_df, merged_htf_df
 
-    def calculate_indicators(self, df, lower_df=None):
-        """计算所有技术指标"""
+    def calculate_indicators(self, df, lower_df=None, symbol: str | None = None):
+        """计算所有技术指标
+
+        Args:
+            df: 主周期K线数据
+            lower_df: 低周期K线数据（用于上下行量计算）
+            symbol: 标的代码（用于获取正确的时间周期）
+        """
         if df is None or df.empty:
             return df
 
         df = df.copy()
 
         # 0. 将低周期成交量聚合到主周期，用于上下行量
-        # 优化: 使用 numpy 向量化操作替代逐行判断
-        if lower_df is not None and not lower_df.empty:
-            ldf = lower_df.copy()
-            close_vals = ldf["close"].to_numpy()
-            open_vals = ldf["open"].to_numpy()
-            vol_vals = ldf["volume"].to_numpy()
-
-            # 向量化计算上下行量
-            # 对齐 Pine: close == open (Doji) 不计入任一方向，避免系统性偏向 down_vol
-            is_up = close_vals > open_vals
-            is_down = close_vals < open_vals
-            ldf["up_vol"] = np.where(is_up, vol_vals, 0)
-            ldf["down_vol"] = np.where(is_down, vol_vals, 0)
-            ldf["bucket"] = ldf["timestamp"].dt.floor(self._pandas_freq(TIMEFRAME))
-
-            # groupby 聚合（这一步无法完全避免，但数据量已通过增量更新控制）
-            vol_agg = ldf.groupby("bucket")[["up_vol", "down_vol"]].sum()
-            df = df.merge(vol_agg, left_on="timestamp", right_index=True, how="left")
+        # 根据标的类型获取正确的主周期频率
+        if symbol:
+            tfs = self.get_timeframes_for_symbol(symbol)
+            main_tf_freq = self._pandas_freq(tfs["main"])
         else:
-            df["up_vol"] = np.nan
-            df["down_vol"] = np.nan
+            main_tf_freq = self._pandas_freq(TIMEFRAME)
+        df = calculate_up_down_volume(df, lower_df, main_tf_freq)
 
-        # Pivot Points (震荡结构) - 向量化优化
-        # 使用滚动窗口计算，避免 Python 循环
-        pivot_len = self.pivot_len
-        n = len(df)
-
-        high_vals = df["high"].to_numpy()
-        low_vals = df["low"].to_numpy()
-
-        is_pivot_high = np.zeros(n, dtype=bool)
-        is_pivot_low = np.zeros(n, dtype=bool)
-
-        # 使用滚动最大/最小值进行向量化判断
-        # 对于 pivot high: high[i] > max(high[i-pivot_len:i]) and high[i] > max(high[i+1:i+pivot_len+1])
-        # 等价于: high[i] == max(high[i-pivot_len:i+pivot_len+1])
-
-        window_size = 2 * pivot_len + 1
-        if n >= window_size:
-            # 注意：需要检查严格大于（不是等于）左右两侧
-            for i in range(pivot_len, n - pivot_len):
-                # Pivot High: 当前high严格大于左右各pivot_len根K线
-                left_max = high_vals[i - pivot_len : i].max()
-                right_max = high_vals[i + 1 : i + pivot_len + 1].max()
-                if high_vals[i] > left_max and high_vals[i] > right_max:
-                    is_pivot_high[i] = True
-
-                # Pivot Low: 当前low严格小于左右各pivot_len根K线
-                left_min = low_vals[i - pivot_len : i].min()
-                right_min = low_vals[i + 1 : i + pivot_len + 1].min()
-                if low_vals[i] < left_min and low_vals[i] < right_min:
-                    is_pivot_low[i] = True
-
+        # Pivot Points (震荡结构)
+        is_pivot_high, is_pivot_low = calculate_pivot_points(df, self.pivot_len)
         df["is_pivot_high"] = is_pivot_high
         df["is_pivot_low"] = is_pivot_low
 
         return df
 
     def calculate_macd_indicators(self, df):
-        """
-        计算 MACD 相关指标（仅在 15 分钟 K 线收盘确认时调用）
-        包括: MACD, ATR, DIF斜率, 分位数分级
-        """
-        if df is None or df.empty:
-            return df
-
-        df = df.copy()
-
-        # 1. MACD (1h) - 用于共振策略
-        # 注意: 用户策略中使用 SMA 计算 Signal 线
-        macd_series, signal_series, hist_series = self._macd_with_sma_signal(
-            df["close"]
-        )
-        if macd_series is not None:
-            df["MACD_12_26_9"] = macd_series
-            df["MACDs_12_26_9"] = signal_series
-            df["MACDh_12_26_9"] = hist_series
-
-        # 2. ATR (14) - 用于标准化 DIF 斜率
-        atr = df.ta.atr(length=14)
-        if atr is not None:
-            df["ATR_14"] = atr
-        else:
-            df["ATR_14"] = np.nan
-
-        # 3. 标准化 DIF 斜率及分位数分级
-        if "MACD_12_26_9" in df.columns and "ATR_14" in df.columns:
-            # 标准化斜率 = (DIF - DIF[1]) / ATR
-            dif_change = df["MACD_12_26_9"] - df["MACD_12_26_9"].shift(1)
-            df["dif_slope"] = dif_change / df["ATR_14"].replace(0, np.nan)
-            df["dif_slope"] = df["dif_slope"].replace([np.inf, -np.inf], np.nan)
-
-            # 滚动分位数计算（使用绝对值，因为我们关心的是斜率强度）
-            abs_slope = df["dif_slope"].abs()
-            df["dif_slope_q20"] = abs_slope.rolling(200, min_periods=50).quantile(0.2)
-            df["dif_slope_q40"] = abs_slope.rolling(200, min_periods=50).quantile(0.4)
-            df["dif_slope_q60"] = abs_slope.rolling(200, min_periods=50).quantile(0.6)
-            df["dif_slope_q80"] = abs_slope.rolling(200, min_periods=50).quantile(0.8)
-
-            # 计算斜率等级 (1-5级)
-            conditions = [
-                abs_slope < df["dif_slope_q20"],
-                (abs_slope >= df["dif_slope_q20"]) & (abs_slope < df["dif_slope_q40"]),
-                (abs_slope >= df["dif_slope_q40"]) & (abs_slope < df["dif_slope_q60"]),
-                (abs_slope >= df["dif_slope_q60"]) & (abs_slope < df["dif_slope_q80"]),
-                abs_slope >= df["dif_slope_q80"],
-            ]
-            choices = [1, 2, 3, 4, 5]
-            df["dif_slope_grade"] = np.select(conditions, choices, default=0)
-
-        return df
+        """计算 MACD 相关指标（仅在 15 分钟 K 线收盘确认时调用）"""
+        return calculate_macd_indicators(df)
 
     def update_swing_levels(self, df, state: SymbolState):
         """
@@ -731,46 +656,10 @@ class StrategyEngine:
 
     def calculate_htf_indicators(self, df):
         """计算高周期 (4h) 指标: MACD, Signal Slope, Histogram Color"""
-        if df is None or len(df) < 50:
-            return None
-
-        df = df.copy()
-
-        # MACD 12, 26, 9
-        # 注意: 用户策略中使用 SMA 计算 Signal 线
-        macd_series, signal_series, hist_series = self._macd_with_sma_signal(
-            df["close"]
-        )
-        if macd_series is None:
-            return None
-
-        df["MACD"] = macd_series
-        df["Signal"] = signal_series
-        df["Hist"] = hist_series
-
-        # 计算 Signal 斜率
-        df["Signal_Slope"] = df["Signal"] - df["Signal"].shift(1)
-
-        # 计算 Histogram 颜色状态 (Aqua/Blue/Red/Maroon)
-        # Aqua: Hist > 0 and Hist > Hist[1] (强多)
-        # Blue: Hist > 0 and Hist < Hist[1] (弱多)
-        # Red: Hist <= 0 and Hist < Hist[1] (强空)
-        # Maroon: Hist <= 0 and Hist > Hist[1] (弱空)
-
-        c1 = (df["Hist"] > 0) & (df["Hist"] > df["Hist"].shift(1))
-        c2 = (df["Hist"] > 0) & (df["Hist"] < df["Hist"].shift(1))
-        c3 = (df["Hist"] <= 0) & (df["Hist"] < df["Hist"].shift(1))
-        c4 = (df["Hist"] <= 0) & (df["Hist"] > df["Hist"].shift(1))
-
-        conditions = [c1, c2, c3, c4]
-        choices = ["AQUA", "BLUE", "RED", "MAROON"]
-
-        df["Hist_Color"] = np.select(conditions, choices, default="GRAY")
-
-        return df
+        return calc_htf_indicators(df)
 
     def _find_recent_wicked_level(
-        self, state: SymbolState, last_idx: int, level_type: str
+        self, state: SymbolState, last_idx: int, level_type: str, lookback: int = None
     ):
         """
         在 liquidity_lookback 窗口内查找最近被扫荡的 swing level
@@ -779,10 +668,14 @@ class StrategyEngine:
             state: SymbolState
             last_idx: 当前 K 线索引
             level_type: 'high' 或 'low'
+            lookback: 自定义回溯窗口，默认使用 self.liquidity_lookback
 
         Returns:
             (bars_since, level_price) 或 (None, None)
         """
+        if lookback is None:
+            lookback = self.liquidity_lookback
+
         candidates = []
         for lvl in state.swing_levels:
             if lvl["type"] != level_type:
@@ -791,7 +684,7 @@ class StrategyEngine:
             if mitigated_at is None:
                 continue
             bars_since = last_idx - mitigated_at
-            if 0 <= bars_since <= self.liquidity_lookback:
+            if 0 <= bars_since <= lookback:
                 candidates.append((bars_since, mitigated_at, lvl["price"]))
 
         if not candidates:
@@ -965,32 +858,28 @@ class StrategyEngine:
         current_ts = last_candle["timestamp"]
 
         # 更新 Pivot 数据库
-        # A股：CISD基于1h数据，使用 htf_df 和 swing_levels_1h
-        # 加密货币：CISD基于1h数据，使用 df 和 swing_levels
+        # 所有市场都更新主周期的 swing_levels（用于 CISD 和 mitigation alerts）
         self.update_swing_levels(df, state)
 
-        # A股CISD检测使用1h数据（htf_df），加密货币使用主周期数据（df）
-        if market_type == MarketType.A_SHARE and htf_df is not None and len(htf_df) > 1:
-            # A股：使用1h数据进行CISD检测
-            cisd_df = htf_df
-            # 更新1h swing levels（用于A股CISD的strong信号判断）
-            self._update_swing_levels_1h(htf_df, state)
-            cisd_last_idx = len(htf_df) - 1
-            cisd_last_candle = htf_df.iloc[-1]
-            cisd_current_ts = cisd_last_candle["timestamp"]
-        else:
-            # 加密货币：使用主周期数据
-            cisd_df = df
-            cisd_last_idx = last_idx
-            cisd_current_ts = current_ts
+        # A股和加密货币都使用主周期数据（15m）进行 CISD 检测
+        cisd_df = df
+        cisd_last_idx = last_idx
+        cisd_current_ts = current_ts
 
-        cisd_result = detect_cisd(cisd_df, cisd_tolerance=self.cisd_tolerance)
+        # A股使用专用的 tolerance 参数
+        if market_type == MarketType.A_SHARE:
+            cisd_tolerance = self.ashare_cisd_tolerance
+        else:
+            cisd_tolerance = self.cisd_tolerance
+
+        cisd_result = detect_cisd(cisd_df, cisd_tolerance=cisd_tolerance)
 
         msgs = []
 
         # --- 1. CISD 策略: Swing High/Low Mitigation Alerts ---
         # 注意：由于 mitigation 只检查已收盘的K线，需要检查上一根收盘K线
         prev_closed_idx = last_idx - 1
+        max_notified_sweeps = 200
         for level in state.swing_levels:
             if level.get("mitigated_at") == prev_closed_idx:
                 mitigated_ts = level.get("mitigated_at_ts")
@@ -1014,25 +903,29 @@ class StrategyEngine:
                                 ),
                             )
                         )
-                    state.notified_sweeps.add(key)
+                    state.notified_sweeps[key] = True
+                    try:
+                        state.notified_sweeps.move_to_end(key)
+                    except Exception:
+                        pass
+                    while len(state.notified_sweeps) > max_notified_sweeps:
+                        state.notified_sweeps.popitem(last=False)
 
         # --- 2. CISD 策略: Normal/Strong CISD Alerts ---
         # 使用辅助方法在 liquidity_lookback 窗口内查找最近被扫荡的 swing level
-        # A股使用1h swing levels，加密货币使用主周期 swing levels
+        # A股和加密货币都使用主周期 swing levels
+        # A股使用专用的 liquidity_lookback 参数
         if market_type == MarketType.A_SHARE:
-            bars_since_high, wicked_high_level = self._find_recent_wicked_level_1h(
-                state, cisd_last_idx, "high"
-            )
-            bars_since_low, wicked_low_level = self._find_recent_wicked_level_1h(
-                state, cisd_last_idx, "low"
-            )
+            liquidity_lookback = self.ashare_liquidity_lookback
         else:
-            bars_since_high, wicked_high_level = self._find_recent_wicked_level(
-                state, cisd_last_idx, "high"
-            )
-            bars_since_low, wicked_low_level = self._find_recent_wicked_level(
-                state, cisd_last_idx, "low"
-            )
+            liquidity_lookback = self.liquidity_lookback
+
+        bars_since_high, wicked_high_level = self._find_recent_wicked_level(
+            state, cisd_last_idx, "high", lookback=liquidity_lookback
+        )
+        bars_since_low, wicked_low_level = self._find_recent_wicked_level(
+            state, cisd_last_idx, "low", lookback=liquidity_lookback
+        )
 
         if cisd_result["flag_at_last"] != 0:
             # 只有当当前信号的时间戳晚于上一次记录的时间戳时才处理
@@ -1155,44 +1048,134 @@ class StrategyEngine:
                     df_with_macd, htf_df, symbol, htf_timeframe=self.htf_timeframe
                 )
 
-                # 使用 K线时间戳去重，确保同一根K线只触发一次
-                if res_val != 0 and res_ts is not None:
-                    # 检查是否是新的1h K线（时间戳不同于上次触发）
-                    is_new_bar = (
-                        state.last_macd_resonance_ts is None
-                        or res_ts > state.last_macd_resonance_ts
-                    )
+                # A股使用连续确认机制：需要连续2根15m K线都检测到同类型共振才发送
+                if market_type == MarketType.A_SHARE:
+                    if res_val != 0 and res_ts is not None:
+                        # 检测到共振
+                        if state.pending_macd_resonance is not None:
+                            # 有待确认的共振，检查是否是同类型
+                            pending_val, pending_info, pending_ts, pending_15m_ts = (
+                                state.pending_macd_resonance
+                            )
+                            # 检查是否是连续的15m K线（间隔应该是15分钟）
+                            # 特殊处理：A股午休期间（11:30-13:00），11:30的K线和13:00的K线视为连续
+                            time_diff = (
+                                current_15m_ts - pending_15m_ts
+                            ).total_seconds() / 60
 
-                    # A股日内 MACD 仅一次提醒
-                    allow_macd_alert = True
-                    if market_type == MarketType.A_SHARE:
-                        today_str = now_ts.strftime("%Y-%m-%d")
-                        if state.last_macd_alert_date == today_str:
-                            allow_macd_alert = False
+                            # 正常连续：14-16分钟
+                            is_normal_consecutive = 14 <= time_diff <= 16
+
+                            # 午休跨越：11:30 -> 13:00 (90分钟间隔)
+                            # 检查 pending 是否是 11:15-11:30 的K线，current 是否是 13:00-13:15 的K线
+                            is_lunch_break_consecutive = False
+                            if 89 <= time_diff <= 91:  # 约90分钟
+                                pending_time = pending_15m_ts.time()
+                                current_time_check = current_15m_ts.time()
+                                from datetime import time as dt_time
+
+                                # pending 应该是 11:15 (代表 11:15-11:30 这根K线)
+                                # current 应该是 13:00 (代表 13:00-13:15 这根K线)
+                                if dt_time(11, 0) <= pending_time <= dt_time(
+                                    11, 30
+                                ) and dt_time(13, 0) <= current_time_check <= dt_time(
+                                    13, 15
+                                ):
+                                    is_lunch_break_consecutive = True
+
+                            is_consecutive = (
+                                is_normal_consecutive or is_lunch_break_consecutive
+                            )
+
+                            if pending_val == res_val and is_consecutive:
+                                # 连续2根K线都是同类型共振，确认信号
+                                # 检查是否是新的K线（时间戳不同于上次触发）
+                                is_new_bar = (
+                                    state.last_macd_resonance_ts is None
+                                    or res_ts > state.last_macd_resonance_ts
+                                )
+
+                                # A股日内 MACD 仅一次提醒
+                                allow_macd_alert = True
+                                today_str = now_ts.strftime("%Y-%m-%d")
+                                if state.last_macd_alert_date == today_str:
+                                    allow_macd_alert = False
+                                else:
+                                    state.last_macd_alert_date = today_str
+
+                                if is_new_bar and allow_macd_alert:
+                                    if res_val == 1:
+                                        msgs.append(
+                                            (
+                                                AlertMessages.TYPE_MACD_RESONANCE_GOLDEN,
+                                                AlertMessages.macd_resonance_golden(
+                                                    name, current_price, res_info
+                                                ),
+                                            )
+                                        )
+                                    elif res_val == -1:
+                                        msgs.append(
+                                            (
+                                                AlertMessages.TYPE_MACD_RESONANCE_DEATH,
+                                                AlertMessages.macd_resonance_death(
+                                                    name, current_price, res_info
+                                                ),
+                                            )
+                                        )
+                                # 记录本次触发的时间戳
+                                state.last_macd_resonance_ts = res_ts
+                                # 清除待确认状态
+                                state.pending_macd_resonance = None
+                            else:
+                                # 不是连续的或类型不同，更新待确认状态
+                                state.pending_macd_resonance = (
+                                    res_val,
+                                    res_info,
+                                    res_ts,
+                                    current_15m_ts,
+                                )
                         else:
-                            state.last_macd_alert_date = today_str
+                            # 没有待确认的共振，记录当前检测结果
+                            state.pending_macd_resonance = (
+                                res_val,
+                                res_info,
+                                res_ts,
+                                current_15m_ts,
+                            )
+                    else:
+                        # 没有检测到共振，清除待确认状态
+                        state.pending_macd_resonance = None
+                else:
+                    # 加密货币：不使用连续确认，直接发送
+                    # 使用 K线时间戳去重，确保同一根K线只触发一次
+                    if res_val != 0 and res_ts is not None:
+                        # 检查是否是新的1h K线（时间戳不同于上次触发）
+                        is_new_bar = (
+                            state.last_macd_resonance_ts is None
+                            or res_ts > state.last_macd_resonance_ts
+                        )
 
-                    if is_new_bar and allow_macd_alert:
-                        if res_val == 1:
-                            msgs.append(
-                                (
-                                    AlertMessages.TYPE_MACD_RESONANCE_GOLDEN,
-                                    AlertMessages.macd_resonance_golden(
-                                        name, current_price, res_info
-                                    ),
+                        if is_new_bar:
+                            if res_val == 1:
+                                msgs.append(
+                                    (
+                                        AlertMessages.TYPE_MACD_RESONANCE_GOLDEN,
+                                        AlertMessages.macd_resonance_golden(
+                                            name, current_price, res_info
+                                        ),
+                                    )
                                 )
-                            )
-                        elif res_val == -1:
-                            msgs.append(
-                                (
-                                    AlertMessages.TYPE_MACD_RESONANCE_DEATH,
-                                    AlertMessages.macd_resonance_death(
-                                        name, current_price, res_info
-                                    ),
+                            elif res_val == -1:
+                                msgs.append(
+                                    (
+                                        AlertMessages.TYPE_MACD_RESONANCE_DEATH,
+                                        AlertMessages.macd_resonance_death(
+                                            name, current_price, res_info
+                                        ),
+                                    )
                                 )
-                            )
-                    # 记录本次触发的时间戳（无论是否发送都更新，避免重复检测）
-                    state.last_macd_resonance_ts = res_ts
+                        # 记录本次触发的时间戳（无论是否发送都更新，避免重复检测）
+                        state.last_macd_resonance_ts = res_ts
 
             # 更新已检测的15分钟K线时间戳（无论是否跳过检测都要更新）
             if is_new_15m_bar:

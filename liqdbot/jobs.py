@@ -149,7 +149,7 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
             continue
 
         try:
-            df = engine.calculate_indicators(df, lower_df)
+            df = engine.calculate_indicators(df, lower_df, symbol)
             display_name = await engine.get_symbol_display_name(symbol)
             res = await engine.analyze_market(
                 symbol, state, df, htf_df, lower_df, display_name

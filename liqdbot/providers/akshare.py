@@ -320,6 +320,12 @@ class AkshareProvider(DataProvider):
             if not pd.api.types.is_datetime64_any_dtype(df["timestamp"]):
                 df["timestamp"] = pd.to_datetime(df["timestamp"])
 
+            # A股数据的 timestamp 是北京时间，确保无时区标记以便与 naive timestamps 比较
+            # 注意：保持为 naive datetime（无时区），因为代码中使用
+            # datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None) 来获取当前时间
+            if df["timestamp"].dt.tz is not None:
+                df["timestamp"] = df["timestamp"].dt.tz_localize(None)
+
             required_cols = ["timestamp", "open", "high", "low", "close", "volume"]
             for col in required_cols:
                 if col not in df.columns:
@@ -365,6 +371,206 @@ class AkshareProvider(DataProvider):
                 f"event=validate_symbol_error provider=akshare symbol={symbol}"
             )
             return False
+
+    async def fetch_realtime_quote(self, symbol: str) -> dict | None:
+        """获取实时报价（当日 OHLC + 最新价）
+
+        Returns:
+            dict: {
+                "open": float,      # 今开
+                "high": float,      # 今日最高
+                "low": float,       # 今日最低
+                "close": float,     # 最新价
+                "volume": float,    # 成交量
+            }
+            或 None（获取失败时）
+        """
+        try:
+            ak = self._get_akshare()
+            loop = asyncio.get_running_loop()
+            is_index = self._is_index(symbol)
+            stock_code = self._extract_stock_code(symbol)
+
+            if is_index:
+                # 指数：使用 stock_zh_index_spot_em
+                # 根据交易所选择分类
+                if symbol.lower().startswith("sh"):
+                    category = "上证系列指数"
+                else:
+                    category = "深证系列指数"
+
+                df = await loop.run_in_executor(
+                    None, lambda: ak.stock_zh_index_spot_em(symbol=category)
+                )
+                if df is None or df.empty:
+                    return None
+
+                # 根据代码过滤
+                row = df[df["代码"].astype(str) == stock_code]
+                if row.empty:
+                    return None
+                row = row.iloc[0]
+
+                return {
+                    "open": float(row.get("今开", 0)),
+                    "high": float(row.get("最高", 0)),
+                    "low": float(row.get("最低", 0)),
+                    "close": float(row.get("最新价", 0)),
+                    "volume": float(row.get("成交量", 0)),
+                }
+            else:
+                # 个股：使用 stock_zh_a_spot_em 获取所有股票再过滤
+                df = await loop.run_in_executor(None, ak.stock_zh_a_spot_em)
+                if df is None or df.empty:
+                    return None
+
+                row = df[df["代码"].astype(str) == stock_code]
+                if row.empty:
+                    return None
+                row = row.iloc[0]
+
+                return {
+                    "open": float(row.get("今开", 0)),
+                    "high": float(row.get("最高", 0)),
+                    "low": float(row.get("最低", 0)),
+                    "close": float(row.get("最新价", 0)),
+                    "volume": float(row.get("成交量", 0)),
+                }
+
+        except Exception as e:
+            logger.warning(f"event=fetch_realtime_quote_error symbol={symbol} err={e}")
+            return None
+
+    async def fetch_ohlcv_with_realtime(
+        self, symbol: str, timeframe: str, limit: int
+    ) -> pd.DataFrame | None:
+        """获取 OHLCV 数据，并用实时报价更新/追加当前未收盘的 K 线
+
+        对于 60m 等较长周期，akshare 只返回已收盘的 K 线。
+        此方法会：
+        1. 获取历史 K 线
+        2. 获取实时报价
+        3. 用 15m K 线 + 实时报价合成当前未收盘的 60m K 线
+
+        Args:
+            symbol: 标的代码
+            timeframe: 时间周期（如 "60m"）
+            limit: 返回的 K 线数量
+
+        Returns:
+            包含实时数据的 DataFrame，最后一根为当前未收盘 K 线
+        """
+        # 1. 获取历史 K 线
+        htf_df = await self.fetch_ohlcv(symbol, timeframe, limit)
+        if htf_df is None or htf_df.empty:
+            return htf_df
+
+        # 2. 判断是否需要合成当前未收盘 K 线
+        if not is_akshare_trading_time():
+            # 非交易时间，直接返回历史数据
+            return htf_df
+
+        # 3. 获取 15m K 线用于合成
+        # 60m = 4 根 15m，获取最近 8 根以确保覆盖当前小时
+        ltf_df = await self.fetch_ohlcv(symbol, "15m", 8)
+        if ltf_df is None or ltf_df.empty:
+            return htf_df
+
+        # 4. 获取实时报价
+        realtime = await self.fetch_realtime_quote(symbol)
+
+        # 5. 计算当前 60m K 线的开盘时间
+        tf_seconds = _timeframe_to_seconds(timeframe)
+        now = datetime.now(SHANGHAI_TZ)
+        # 当前 K 线开盘时间（向下取整到周期边界）
+        now_ts = now.timestamp()
+        current_bar_open_ts = (now_ts // tf_seconds) * tf_seconds
+        current_bar_open = datetime.fromtimestamp(current_bar_open_ts, SHANGHAI_TZ)
+        # 转为 naive datetime（与历史数据一致）
+        current_bar_open = current_bar_open.replace(tzinfo=None)
+
+        # 6. 检查历史数据的最后一根是否就是当前 K 线
+        last_ts = htf_df.iloc[-1]["timestamp"]
+        if isinstance(last_ts, pd.Timestamp):
+            last_ts = last_ts.to_pydatetime()
+        if hasattr(last_ts, "tzinfo") and last_ts.tzinfo is not None:
+            last_ts = last_ts.replace(tzinfo=None)
+
+        # 如果最后一根就是当前 K 线，说明已经有数据（可能在收盘边界）
+        if last_ts >= current_bar_open:
+            # 用实时报价更新最后一根
+            if realtime:
+                htf_df.loc[htf_df.index[-1], "close"] = realtime["close"]
+                htf_df.loc[htf_df.index[-1], "high"] = max(
+                    htf_df.iloc[-1]["high"], realtime["high"]
+                )
+                htf_df.loc[htf_df.index[-1], "low"] = min(
+                    htf_df.iloc[-1]["low"], realtime["low"]
+                )
+            return htf_df
+
+        # 7. 从 15m K 线中筛选属于当前 60m 周期的数据
+        ltf_in_current = []
+        for _, row in ltf_df.iterrows():
+            row_ts = row["timestamp"]
+            if isinstance(row_ts, pd.Timestamp):
+                row_ts = row_ts.to_pydatetime()
+            if hasattr(row_ts, "tzinfo") and row_ts.tzinfo is not None:
+                row_ts = row_ts.replace(tzinfo=None)
+            if row_ts >= current_bar_open:
+                ltf_in_current.append(row)
+
+        if not ltf_in_current:
+            # 没有 15m 数据，尝试用实时报价创建一根
+            if realtime and realtime["close"] > 0:
+                new_bar = pd.DataFrame(
+                    [
+                        {
+                            "timestamp": current_bar_open,
+                            "open": realtime["open"],
+                            "high": realtime["high"],
+                            "low": realtime["low"],
+                            "close": realtime["close"],
+                            "volume": realtime["volume"],
+                        }
+                    ]
+                )
+                htf_df = pd.concat([htf_df, new_bar], ignore_index=True)
+            return htf_df
+
+        # 8. 合成当前 60m K 线
+        ltf_current_df = pd.DataFrame(ltf_in_current)
+        synth_open = float(ltf_current_df.iloc[0]["open"])
+        synth_high = float(ltf_current_df["high"].max())
+        synth_low = float(ltf_current_df["low"].min())
+        synth_close = float(ltf_current_df.iloc[-1]["close"])
+        synth_volume = float(ltf_current_df["volume"].sum())
+
+        # 用实时报价更新 close/high/low
+        if realtime and realtime["close"] > 0:
+            synth_close = realtime["close"]
+            synth_high = max(synth_high, realtime["high"])
+            synth_low = min(synth_low, realtime["low"])
+
+        new_bar = pd.DataFrame(
+            [
+                {
+                    "timestamp": current_bar_open,
+                    "open": synth_open,
+                    "high": synth_high,
+                    "low": synth_low,
+                    "close": synth_close,
+                    "volume": synth_volume,
+                }
+            ]
+        )
+        htf_df = pd.concat([htf_df, new_bar], ignore_index=True)
+
+        # 保持 limit 限制
+        if len(htf_df) > limit:
+            htf_df = htf_df.tail(limit).reset_index(drop=True)
+
+        return htf_df
 
     @staticmethod
     def normalize_symbol(raw: str) -> str:

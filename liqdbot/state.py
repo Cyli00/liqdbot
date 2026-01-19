@@ -129,7 +129,7 @@ class SymbolState:
         self.last_analysis = {}
         self.last_cisd_ts = None
         self.cisd_origin_alert_strength = OrderedDict()
-        self.notified_sweeps = set()
+        self.notified_sweeps = OrderedDict()  # 改用 OrderedDict 以支持 LRU 裁剪
         self.alert_sent_times = {}
         self.alert_sent_strength = {}
         # 重置数据缓存
@@ -158,5 +158,9 @@ class SymbolState:
         # --- MACD A股日内去重 ---
         # 格式: "YYYY-MM-DD"，当天已触发后不再重复
         self.last_macd_alert_date: str | None = None
+        # --- MACD 连续确认 ---
+        # 记录上一次检测到的共振类型和时间戳，用于连续确认
+        # pending_resonance: (共振类型, 详细信息, 时间戳, 首次检测的15m时间戳)
+        self.pending_macd_resonance: tuple | None = None
         # --- Coinbase数据缓存（用于加密货币RVOL计算）---
         self.cached_coinbase_df = None

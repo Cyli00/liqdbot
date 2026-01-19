@@ -236,7 +236,7 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
                 return result
 
             calc_start = time.perf_counter_ns() // 1_000_000
-            df = engine.calculate_indicators(df, lower_df)
+            df = engine.calculate_indicators(df, lower_df, symbol)
             result["calc_ms"] = (time.perf_counter_ns() // 1_000_000) - calc_start
 
             analyze_start = time.perf_counter_ns() // 1_000_000
