@@ -108,7 +108,7 @@ SLOW_THRESHOLD_MS=800
 STATUS_MAX_CONCURRENCY=4
 
 # A-share data cache TTL (seconds)
-AKSHARE_CACHE_TTL_S=300
+AKSHARE_CACHE_TTL_S=600
 ```
 
 #### Running in Debug Mode

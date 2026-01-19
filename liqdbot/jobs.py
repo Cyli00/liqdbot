@@ -192,14 +192,18 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
                 if premium_info is not None:
                     premium_pct = premium_info["premium_pct"]
                     coinbase_symbol = premium_info["coinbase_symbol"]
-                    okx_symbol = premium_info["okx_symbol"]
+                    usdt_symbol = premium_info["usdt_symbol"]
                     coinbase_price = premium_info["coinbase_price"]
+                    usdt_avg_price = premium_info["usdt_avg_price"]
                     okx_price = premium_info["okx_price"]
+                    binance_price = premium_info["binance_price"]
                     premium_sign = "+" if premium_pct >= 0 else ""
                     final_msg += (
                         f"\n\n💱 **现货溢价**\n"
                         f"Coinbase `{coinbase_symbol}`: `{coinbase_price:,.2f}`\n"
-                        f"OKX `{okx_symbol}`: `{okx_price:,.2f}`\n"
+                        f"USDT均价 `{usdt_symbol}`: `{usdt_avg_price:,.2f}`\n"
+                        f"  ├─ OKX: `{okx_price:,.2f}`\n"
+                        f"  └─ Binance: `{binance_price:,.2f}`\n"
                         f"溢价: `{premium_sign}{premium_pct:.3f}%`"
                     )
             except Exception as e:

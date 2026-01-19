@@ -35,7 +35,7 @@ STATUS_MAX_CONCURRENCY = int(os.getenv("STATUS_MAX_CONCURRENCY", "4"))
 # 慢请求阈值（毫秒），超过此值会输出 WARNING 日志
 SLOW_THRESHOLD_MS = int(os.getenv("SLOW_THRESHOLD_MS", "800"))
 # A股数据缓存 TTL（秒），同一根已收盘K线在此时间内复用缓存
-AKSHARE_CACHE_TTL_S = int(os.getenv("AKSHARE_CACHE_TTL_S", "300"))
+AKSHARE_CACHE_TTL_S = int(os.getenv("AKSHARE_CACHE_TTL_S", "600"))
 
 
 def getenv_bool(key: str, default: str = "false") -> bool:

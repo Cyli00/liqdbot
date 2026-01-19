@@ -296,9 +296,6 @@ def check_macd_resonance(
     ):
         time_diff = abs((cross_1h_time - cross_4h_time).total_seconds())
         cross_time_gap_hours = time_diff / 3600
-        max_gap_hours = _timeframe_to_minutes(htf_timeframe) / 60.0
-        if cross_time_gap_hours > max_gap_hours:
-            cross_time_gap_hours = None
     else:
         cross_1h_time = None
         cross_4h_time = None

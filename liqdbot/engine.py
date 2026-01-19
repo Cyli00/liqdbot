@@ -356,7 +356,7 @@ class StrategyEngine:
                 )
                 if isinstance(results[i], Exception):
                     logging.warning(
-                        f"[{symbol}] Coinbase 数据获取失败，使用 Binance 数据作为 RVOL 备选"
+                        f"[{symbol}] Coinbase 数据获取失败，RVOL 计算将使用 Binance 1h 数据"
                     )
 
         # 缓存Coinbase数据到state
@@ -456,7 +456,7 @@ class StrategyEngine:
                 new_coinbase_df = result
                 if isinstance(results[i], Exception):
                     logging.debug(
-                        f"[{symbol}] Coinbase 增量数据获取失败，将使用缓存或 Binance 数据"
+                        f"[{symbol}] Coinbase 增量数据获取失败，RVOL 计算将使用缓存或 Binance 1h 数据"
                     )
 
         # 缓存Coinbase数据
@@ -1282,15 +1282,19 @@ class StrategyEngine:
 
     async def fetch_spot_premium(self, symbol: str) -> dict | None:
         """
-        计算现货溢价: (Coinbase BTC/USD - OKX BTC/USDT) / Coinbase BTC/USD
+        计算现货溢价: (Coinbase BTC/USD - USDT均价) / Coinbase BTC/USD
+
+        USDT均价 = (OKX BTC/USDT + Binance BTC/USDT) / 2
 
         返回:
             {
                 "coinbase_price": float,  # Coinbase BTC/USD 价格
+                "usdt_avg_price": float,   # OKX + Binance 平均价格
                 "okx_price": float,        # OKX BTC/USDT 价格
+                "binance_price": float,    # Binance BTC/USDT 价格
                 "premium_pct": float,      # 溢价百分比
                 "coinbase_symbol": str,    # Coinbase交易对
-                "okx_symbol": str,         # OKX交易对
+                "usdt_symbol": str,        # USDT交易对
             }
         """
         market_type = detect_market_type(symbol)
@@ -1300,13 +1304,14 @@ class StrategyEngine:
         # 将symbol映射到对应交易对
         base_currency = symbol.split("/")[0] if "/" in symbol else symbol
         coinbase_symbol = f"{base_currency}/USD"
-        okx_symbol = f"{base_currency}/USDT"
+        usdt_symbol = f"{base_currency}/USDT"
 
         try:
-            # 并发获取两个交易所的ticker
-            coinbase_ticker, okx_ticker = await asyncio.gather(
+            # 并发获取三个交易所的ticker
+            coinbase_ticker, okx_ticker, binance_ticker = await asyncio.gather(
                 self.coinbase_provider.fetch_ticker(coinbase_symbol),
-                self.okx_provider.fetch_ticker(okx_symbol),
+                self.okx_provider.fetch_ticker(usdt_symbol),
+                self.crypto_provider.fetch_ticker(usdt_symbol),
                 return_exceptions=True,
             )
 
@@ -1315,26 +1320,37 @@ class StrategyEngine:
                 return None
 
             if isinstance(okx_ticker, Exception) or okx_ticker is None:
-                logging.warning(f"[{symbol}] 获取OKX {okx_symbol} ticker失败")
+                logging.warning(f"[{symbol}] 获取OKX {usdt_symbol} ticker失败")
+                return None
+
+            if isinstance(binance_ticker, Exception) or binance_ticker is None:
+                logging.warning(f"[{symbol}] 获取Binance {usdt_symbol} ticker失败")
                 return None
 
             coinbase_price = coinbase_ticker.get("last")
             okx_price = okx_ticker.get("last")
+            binance_price = binance_ticker.get("last")
 
-            if coinbase_price is None or okx_price is None:
+            if coinbase_price is None or okx_price is None or binance_price is None:
                 return None
 
             if coinbase_price == 0:
                 return None
 
-            premium_pct = (coinbase_price - okx_price) / coinbase_price * 100
+            # 计算 USDT 市场平均价格
+            usdt_avg_price = (okx_price + binance_price) / 2
+
+            # 计算溢价百分比
+            premium_pct = (coinbase_price - usdt_avg_price) / coinbase_price * 100
 
             return {
                 "coinbase_price": coinbase_price,
+                "usdt_avg_price": usdt_avg_price,
                 "okx_price": okx_price,
+                "binance_price": binance_price,
                 "premium_pct": premium_pct,
                 "coinbase_symbol": coinbase_symbol,
-                "okx_symbol": okx_symbol,
+                "usdt_symbol": usdt_symbol,
             }
         except Exception as e:
             logging.exception(f"[{symbol}] 计算现货溢价失败: {e}")

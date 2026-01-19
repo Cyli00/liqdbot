@@ -74,6 +74,15 @@ class AkshareProvider(DataProvider):
         self._cache: dict[tuple[str, str], tuple[pd.DataFrame, float, float]] = {}
         self._name_cache: dict[str, str] = {}  # 按需缓存的名称
 
+        # 全市场行情缓存（用于减少 stock_zh_a_spot_em 调用）
+        self._spot_cache: pd.DataFrame | None = None  # 缓存的全市场DataFrame
+        self._spot_cache_time: float = 0  # 缓存时间戳
+        self._spot_cache_ttl: int = 60  # 60秒TTL
+
+        # 指数行情缓存（按category分类）
+        self._index_spot_cache: dict[str, tuple[float, pd.DataFrame]] = {}  # {category: (timestamp, df)}
+        self._index_cache_ttl: int = 60  # 60秒TTL
+
     def _get_akshare(self):
         if self._ak is None:
             import akshare as ak
@@ -366,6 +375,95 @@ class AkshareProvider(DataProvider):
             )
             return False
 
+    async def _get_spot_market_data(self) -> pd.DataFrame | None:
+        """获取全市场行情数据（带缓存）
+
+        此方法会缓存 stock_zh_a_spot_em 的结果，避免在同一监控周期内
+        多次拉取全市场数据（几千只股票）。
+
+        Returns:
+            全市场行情 DataFrame，或 None（获取失败时）
+        """
+        now = time.time()
+
+        # 检查缓存
+        if (
+            self._spot_cache is not None
+            and (now - self._spot_cache_time) < self._spot_cache_ttl
+        ):
+            logger.debug(
+                f"event=spot_cache_hit rows={len(self._spot_cache)} "
+                f"age_s={int(now - self._spot_cache_time)}"
+            )
+            return self._spot_cache
+
+        # 拉取新数据
+        try:
+            ak = self._get_akshare()
+            loop = asyncio.get_running_loop()
+            df = await loop.run_in_executor(None, ak.stock_zh_a_spot_em)
+
+            if df is None or df.empty:
+                logger.warning("event=spot_fetch_empty")
+                return None
+
+            self._spot_cache = df
+            self._spot_cache_time = now
+            logger.info(
+                f"event=spot_cache_refresh rows={len(df)} "
+                f"ttl_s={self._spot_cache_ttl}"
+            )
+            return df
+
+        except Exception as e:
+            logger.error(f"event=spot_fetch_error err={e}")
+            return None
+
+    async def _get_index_spot_data(self, category: str) -> pd.DataFrame | None:
+        """获取指数行情数据（带缓存）
+
+        Args:
+            category: 指数分类（"上证系列指数" 或 "深证系列指数"）
+
+        Returns:
+            指数行情 DataFrame，或 None（获取失败时）
+        """
+        now = time.time()
+
+        # 检查缓存
+        if category in self._index_spot_cache:
+            cached_ts, cached_df = self._index_spot_cache[category]
+            if (now - cached_ts) < self._index_cache_ttl:
+                logger.debug(
+                    f"event=index_cache_hit category={category} "
+                    f"rows={len(cached_df)} age_s={int(now - cached_ts)}"
+                )
+                return cached_df
+
+        # 拉取新数据
+        try:
+            ak = self._get_akshare()
+            loop = asyncio.get_running_loop()
+            df = await loop.run_in_executor(
+                None, lambda: ak.stock_zh_index_spot_em(symbol=category)
+            )
+
+            if df is None or df.empty:
+                logger.warning(f"event=index_fetch_empty category={category}")
+                return None
+
+            self._index_spot_cache[category] = (now, df)
+            logger.info(
+                f"event=index_cache_refresh category={category} "
+                f"rows={len(df)} ttl_s={self._index_cache_ttl}"
+            )
+            return df
+
+        except Exception as e:
+            logger.error(f"event=index_fetch_error category={category} err={e}")
+            return None
+
+
     async def fetch_realtime_quote(self, symbol: str) -> dict | None:
         """获取实时报价（当日 OHLC + 最新价）
 
@@ -380,22 +478,18 @@ class AkshareProvider(DataProvider):
             或 None（获取失败时）
         """
         try:
-            ak = self._get_akshare()
-            loop = asyncio.get_running_loop()
             is_index = self._is_index(symbol)
             stock_code = self._extract_stock_code(symbol)
 
             if is_index:
-                # 指数：使用 stock_zh_index_spot_em
+                # 指数：使用缓存的指数行情数据
                 # 根据交易所选择分类
                 if symbol.lower().startswith("sh"):
                     category = "上证系列指数"
                 else:
                     category = "深证系列指数"
 
-                df = await loop.run_in_executor(
-                    None, lambda: ak.stock_zh_index_spot_em(symbol=category)
-                )
+                df = await self._get_index_spot_data(category)
                 if df is None or df.empty:
                     return None
 
@@ -413,8 +507,8 @@ class AkshareProvider(DataProvider):
                     "volume": float(row.get("成交量", 0)),
                 }
             else:
-                # 个股：使用 stock_zh_a_spot_em 获取所有股票再过滤
-                df = await loop.run_in_executor(None, ak.stock_zh_a_spot_em)
+                # 个股：使用缓存的全市场行情数据
+                df = await self._get_spot_market_data()
                 if df is None or df.empty:
                     return None
 
