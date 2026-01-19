@@ -53,10 +53,10 @@
    FETCH_LIMIT=400
 
    # A-Share Config
-   ASHARE_SYMBOL=sh000001      # SSE Composite Index
-   ASHARE_TF_SHORT=15m
-   ASHARE_TF_LONG=60m
-   ASHARE_MA5_PERIOD=5
+   AKSHARE_SYMBOL=sh000001      # SSE Composite Index
+   AKSHARE_TF_SHORT=15m
+   AKSHARE_TF_LONG=60m
+   AKSHARE_MA5_PERIOD=5
 
    # Strategy Params
    PIVOT_LEN=12
@@ -257,10 +257,10 @@ sudo journalctl -u liqdbot.service -f
    FETCH_LIMIT=400
 
    # A股配置
-   ASHARE_SYMBOL=sh000001      # 上证指数
-   ASHARE_TF_SHORT=15m
-   ASHARE_TF_LONG=60m
-   ASHARE_MA5_PERIOD=5
+   AKSHARE_SYMBOL=sh000001      # 上证指数
+   AKSHARE_TF_SHORT=15m
+   AKSHARE_TF_LONG=60m
+   AKSHARE_MA5_PERIOD=5
 
    # 策略参数
    PIVOT_LEN=12
@@ -312,7 +312,7 @@ SLOW_THRESHOLD_MS=800
 STATUS_MAX_CONCURRENCY=4
 
 # A股数据缓存 TTL（秒）
-AKSHARE_CACHE_TTL_S=300
+AKSHARE_CACHE_TTL_S=600
 ```
 
 #### 调试模式运行

@@ -77,6 +77,16 @@ RETRY_DELAY = 5  # 秒
 # --- Alert 去重配置 ---
 ALERT_COOLDOWN = 180  # 3分钟内同类型alert不重复发送
 
+# --- MACD 共振配置 ---
+# 是否强制要求 1h/4h（或 15m/60m）交叉时间在共振窗口内才触发（窗口=HTF周期小时数 * multiplier）
+MACD_RESONANCE_ENFORCE_TIME_GAP = getenv_bool(
+    "MACD_RESONANCE_ENFORCE_TIME_GAP", "false"
+)
+# 共振窗口倍数：1.0 表示窗口=HTF周期长度（如 4h -> 4 小时）
+MACD_RESONANCE_MAX_GAP_MULTIPLIER = float(
+    os.getenv("MACD_RESONANCE_MAX_GAP_MULTIPLIER", "1.0")
+)
+
 # --- A股配置 ---
 DEFAULT_ASHARE_SYMBOL = os.getenv("ASHARE_SYMBOL", "sh000001")  # 默认上证指数
 # 默认监控的 A 股标的列表

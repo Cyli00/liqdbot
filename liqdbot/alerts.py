@@ -197,13 +197,24 @@ class AlertMessages:
 
         # 时间间隔
         time_gap = info.get("cross_time_gap_hours")
+        time_gap_max = info.get("cross_time_gap_max_hours")
+        time_gap_within = info.get("cross_time_gap_within_window")
         if time_gap is not None:
             if time_gap < 1:
                 time_gap_str = f"{int(time_gap * 60)} 分钟"
             else:
                 time_gap_str = f"{time_gap:.1f} 小时"
+            if time_gap_within is False and time_gap_max is not None:
+                time_gap_str += f"（超出窗口 {time_gap_max:.1f} 小时）"
         else:
             time_gap_str = "未知"
+
+        if time_gap_within is False:
+            summary = (
+                f"📝 说明: {ltf_label} 与 {htf_label} 周期同向，但交叉时间差较大"
+            )
+        else:
+            summary = f"📝 说明: {ltf_label} 与 {htf_label} 周期趋势多头共振"
 
         return (
             f"🚀 **MACD {ltf_label}/{htf_label} 共振金叉**\n"
@@ -219,7 +230,7 @@ class AlertMessages:
             f"  • 动能: {state_str}\n"
             f"\n"
             f"⏱ **交叉时间间隔:** {time_gap_str}\n"
-            f"📝 说明: {ltf_label} 与 {htf_label} 周期趋势多头共振"
+            f"{summary}"
         )
 
     @staticmethod
@@ -249,13 +260,24 @@ class AlertMessages:
 
         # 时间间隔
         time_gap = info.get("cross_time_gap_hours")
+        time_gap_max = info.get("cross_time_gap_max_hours")
+        time_gap_within = info.get("cross_time_gap_within_window")
         if time_gap is not None:
             if time_gap < 1:
                 time_gap_str = f"{int(time_gap * 60)} 分钟"
             else:
                 time_gap_str = f"{time_gap:.1f} 小时"
+            if time_gap_within is False and time_gap_max is not None:
+                time_gap_str += f"（超出窗口 {time_gap_max:.1f} 小时）"
         else:
             time_gap_str = "未知"
+
+        if time_gap_within is False:
+            summary = (
+                f"📝 说明: {ltf_label} 与 {htf_label} 周期同向，但交叉时间差较大"
+            )
+        else:
+            summary = f"📝 说明: {ltf_label} 与 {htf_label} 周期趋势空头共振"
 
         return (
             f"📉 **MACD {ltf_label}/{htf_label} 共振死叉**\n"
@@ -271,7 +293,7 @@ class AlertMessages:
             f"  • 动能: {state_str}\n"
             f"\n"
             f"⏱ **交叉时间间隔:** {time_gap_str}\n"
-            f"📝 说明: {ltf_label} 与 {htf_label} 周期趋势空头共振"
+            f"{summary}"
         )
 
     @staticmethod

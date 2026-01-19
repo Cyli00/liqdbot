@@ -189,6 +189,48 @@ class StrategyEngine:
         mapping = {"s": "s", "m": "min", "h": "h", "d": "D", "w": "W"}
         return f"{value}{mapping.get(unit, 'h')}"
 
+    def is_new_bar_closed(self, df, state: SymbolState, timeframe: str) -> bool:
+        """
+        检测指定时间周期的K线是否收盘（是否有新的K线）
+
+        Args:
+            df: K线数据
+            state: 标的状态
+            timeframe: 时间周期 ('15m', '1h', '4h')
+
+        Returns:
+            bool: True表示有新K线收盘，需要重新计算指标
+        """
+        if df is None or df.empty:
+            return False
+
+        # 获取最后一根K线的时间戳
+        last_bar_ts = df.iloc[-1]["timestamp"]
+
+        # 根据时间周期选择对应的状态字段
+        if timeframe == "15m":
+            last_recorded_ts = state.last_15m_bar_ts
+        elif timeframe == "1h":
+            last_recorded_ts = state.last_1h_bar_ts
+        elif timeframe == "4h":
+            last_recorded_ts = state.last_4h_bar_ts
+        else:
+            return True  # 未知周期，默认需要计算
+
+        # 如果是首次检查或时间戳不同，说明有新K线
+        is_new = last_recorded_ts is None or last_bar_ts != last_recorded_ts
+
+        # 更新状态
+        if is_new:
+            if timeframe == "15m":
+                state.last_15m_bar_ts = last_bar_ts
+            elif timeframe == "1h":
+                state.last_1h_bar_ts = last_bar_ts
+            elif timeframe == "4h":
+                state.last_4h_bar_ts = last_bar_ts
+
+        return is_new
+
     @staticmethod
     def _ohlcv_to_df(ohlcv):
         df = pd.DataFrame(
@@ -494,15 +536,45 @@ class StrategyEngine:
 
         return merged_df, merged_lower_df, merged_htf_df
 
-    def calculate_indicators(self, df, lower_df=None, symbol: str | None = None):
+    def calculate_indicators(self, df, lower_df=None, symbol: str | None = None, state: SymbolState | None = None):
         """计算所有技术指标
 
         Args:
             df: 主周期K线数据
             lower_df: 低周期K线数据（用于上下行量计算）
             symbol: 标的代码（用于获取正确的时间周期）
+            state: 标的状态（用于检查是否需要重新计算）
+
+        优化逻辑：
+            - Pivot Points 和 Up/Down Volume 只在主周期K线收盘时重新计算
+            - 对于加密货币（1h主周期），只在1h K线收盘时计算
+            - 对于A股（15m主周期），只在15m K线收盘时计算
+            - 如果没有新K线且df已有指标列，直接返回
         """
         if df is None or df.empty:
+            return df
+
+        # 检查是否需要重新计算（只在主周期K线收盘时）
+        need_recalculate = True
+        if state is not None and symbol is not None:
+            # 根据市场类型确定主周期
+            market_type = detect_market_type(symbol)
+            if market_type == MarketType.A_SHARE:
+                check_timeframe = "15m"
+            else:
+                check_timeframe = "1h"
+
+            # 检查是否有新的主周期K线
+            is_new_bar = self.is_new_bar_closed(df, state, check_timeframe)
+
+            # 如果没有新K线，且df已经有指标列，就不需要重新计算
+            has_indicators = all(col in df.columns for col in ["is_pivot_high", "is_pivot_low"])
+
+            if not is_new_bar and has_indicators:
+                need_recalculate = False
+                logging.debug(f"[{symbol}] 跳过指标计算（无新{check_timeframe} K线）")
+
+        if not need_recalculate:
             return df
 
         df = df.copy()
@@ -527,13 +599,39 @@ class StrategyEngine:
         """计算 MACD 相关指标（仅在 15 分钟 K 线收盘确认时调用）"""
         return calculate_macd_indicators(df)
 
-    def update_swing_levels(self, df, state: SymbolState):
+    def update_swing_levels(self, df, state: SymbolState, symbol: str | None = None, force_update: bool = False):
         """
         更新 Swing 高低点（支撑/阻力位）
 
         优化: 使用向量化操作预计算 cummax/cummin，避免对每个 level 逐一扫描后续K线
         复杂度从 O(levels × bars) 降低到 O(bars + levels)
+
+        Args:
+            df: K线数据
+            state: 标的状态
+            symbol: 标的代码（用于确定市场类型）
+            force_update: 是否强制更新（默认False，只在主周期K线收盘时更新）
+
+        优化逻辑：
+            - 只在主周期K线收盘时重新计算 swing levels
+            - 对于加密货币（1h主周期），只在1h K线收盘时更新
+            - 对于A股（15m主周期），只在15m K线收盘时更新
+            - 如果没有新K线，直接返回（除非force_update=True）
         """
+        # 检查是否需要更新（只在主周期K线收盘时）
+        if not force_update and symbol is not None:
+            # 根据市场类型确定主周期
+            market_type = detect_market_type(symbol)
+            if market_type == MarketType.A_SHARE:
+                check_timeframe = "15m"
+            else:
+                check_timeframe = "1h"
+
+            is_new_bar = self.is_new_bar_closed(df, state, check_timeframe)
+            if not is_new_bar and state.swing_levels:
+                # 没有新K线且已有swing_levels，跳过更新
+                return
+
         state.swing_levels = []
         pivot_len = self.pivot_len
         last_idx = len(df) - 1
@@ -576,7 +674,7 @@ class StrategyEngine:
 
         # 检查 Mitigation - 优化版本
         # 注意：只检查已收盘的K线，排除最后一根未收盘的K线
-        # 这确保 Swing High/Low 被扫掉需要1小时收盘确认
+        # 这确保 Swing High/Low 被扫掉需要收盘确认
 
         # 预计算: 从每个位置开始到 last_idx-1 的 cummax/cummin
         # 我们需要知道从 idx+1 到 last_idx-1 范围内的最高价和最低价首次触及某水平的位置
@@ -859,7 +957,7 @@ class StrategyEngine:
 
         # 更新 Pivot 数据库
         # 所有市场都更新主周期的 swing_levels（用于 CISD 和 mitigation alerts）
-        self.update_swing_levels(df, state)
+        self.update_swing_levels(df, state, symbol)
 
         # A股和加密货币都使用主周期数据（15m）进行 CISD 检测
         cisd_df = df
@@ -1044,8 +1142,13 @@ class StrategyEngine:
                 # 只有15分钟K线收盘时才计算 MACD 相关指标
                 df_with_macd = self.calculate_macd_indicators(df)
 
+                tfs = self.get_timeframes_for_symbol(symbol)
                 res_val, res_info, res_ts = check_macd_resonance(
-                    df_with_macd, htf_df, symbol, htf_timeframe=self.htf_timeframe
+                    df_with_macd,
+                    htf_df,
+                    symbol,
+                    htf_timeframe=tfs["htf"],
+                    ltf_timeframe=tfs.get("ltf"),
                 )
 
                 # A股使用连续确认机制：需要连续2根15m K线都检测到同类型共振才发送

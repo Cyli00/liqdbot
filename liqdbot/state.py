@@ -164,3 +164,7 @@ class SymbolState:
         self.pending_macd_resonance: tuple | None = None
         # --- Coinbase数据缓存（用于加密货币RVOL计算）---
         self.cached_coinbase_df = None
+        # --- K线收盘时间戳跟踪（用于优化指标计算）---
+        self.last_1h_bar_ts = None  # 上次计算1h指标的K线时间戳
+        self.last_15m_bar_ts = None  # 上次计算15m指标的K线时间戳
+        self.last_4h_bar_ts = None  # 上次计算4h指标的K线时间戳

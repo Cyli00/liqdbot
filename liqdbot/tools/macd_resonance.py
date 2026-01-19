@@ -7,6 +7,10 @@ import re
 
 import pandas as pd
 
+from ..config import (
+    MACD_RESONANCE_ENFORCE_TIME_GAP,
+    MACD_RESONANCE_MAX_GAP_MULTIPLIER,
+)
 from ..providers.base import MarketType, detect_market_type
 
 
@@ -123,6 +127,7 @@ def check_macd_resonance(
     htf_df: pd.DataFrame,
     symbol: str | None = None,
     htf_timeframe: str = "4h",
+    ltf_timeframe: str | None = None,
 ) -> tuple[int, dict, pd.Timestamp | None]:
     """
     检查 MACD 1h/4h 共振
@@ -155,8 +160,14 @@ def check_macd_resonance(
         "zero_pos_1h": "unknown",
         "zero_pos_4h": "unknown",
         "cross_time_gap_hours": None,
+        "cross_time_gap_max_hours": None,
+        "cross_time_gap_within_window": None,
         "cross_1h_at": None,
         "cross_4h_at": None,
+        "cross_1h_close_at": None,
+        "cross_4h_close_at": None,
+        "ltf_timeframe": None,
+        "htf_timeframe": None,
     }
 
     if df is None or htf_df is None or len(df) < 5 or len(htf_df) < 5:
@@ -212,6 +223,10 @@ def check_macd_resonance(
 
     if not res_golden and not res_death:
         return 0, empty_info, None
+
+    market_type = detect_market_type(symbol) if symbol else MarketType.CRYPTO
+    if ltf_timeframe is None:
+        ltf_timeframe = "15m" if market_type == MarketType.A_SHARE else "1h"
 
     # ========== 计算详细信息 ==========
     ts_1h = last_1h["timestamp"]
@@ -276,7 +291,13 @@ def check_macd_resonance(
     # 3. 计算1h和4h交叉的时间间隔
     cross_1h_time = None
     cross_4h_time = None
+    cross_1h_close_time = None
+    cross_4h_close_time = None
     cross_time_gap_hours = None
+    cross_time_gap_within_window = None
+    cross_time_gap_max_hours = (
+        _timeframe_to_minutes(htf_timeframe) / 60.0
+    ) * MACD_RESONANCE_MAX_GAP_MULTIPLIER
 
     # 确定要找的交叉类型
     is_golden = res_golden
@@ -294,25 +315,39 @@ def check_macd_resonance(
         and cross_4h_time is not None
         and cross_1h_is_golden == cross_4h_is_golden == is_golden
     ):
-        time_diff = abs((cross_1h_time - cross_4h_time).total_seconds())
+        ltf_minutes = _timeframe_to_minutes(ltf_timeframe)
+        htf_minutes = _timeframe_to_minutes(htf_timeframe)
+
+        # ccxt 的 timestamp 为 K线开盘时间，交叉判断基于收盘价/指标，使用收盘时间更贴近“发生时间点”
+        cross_1h_close_time = cross_1h_time + pd.Timedelta(minutes=ltf_minutes)
+        cross_4h_close_time = cross_4h_time + pd.Timedelta(minutes=htf_minutes)
+
+        time_diff = abs((cross_1h_close_time - cross_4h_close_time).total_seconds())
         cross_time_gap_hours = time_diff / 3600
+        cross_time_gap_within_window = (
+            cross_time_gap_hours <= cross_time_gap_max_hours
+        )
     else:
         cross_1h_time = None
         cross_4h_time = None
+        cross_1h_close_time = None
+        cross_4h_close_time = None
         cross_time_gap_hours = None
+        cross_time_gap_within_window = None
 
     # 辅助数据
     slope_4h = last_4h.get("Signal_Slope", 0.0)
     hist_color_4h = last_4h.get("Hist_Color", "GRAY")
 
+    if (
+        MACD_RESONANCE_ENFORCE_TIME_GAP
+        and cross_time_gap_within_window is not True
+    ):
+        return 0, empty_info, None
+
     # 获取时间周期信息用于显示
-    market_type = detect_market_type(symbol) if symbol else MarketType.CRYPTO
-    if market_type == MarketType.A_SHARE:
-        ltf_label = "15m"
-        htf_label = "60m"
-    else:
-        ltf_label = "1h"
-        htf_label = "4h"
+    ltf_label = ltf_timeframe
+    htf_label = htf_timeframe
 
     info = {
         "slope_4h": slope_4h,
@@ -321,12 +356,18 @@ def check_macd_resonance(
         "zero_pos_1h": zero_pos_1h,
         "zero_pos_4h": zero_pos_4h,
         "cross_time_gap_hours": cross_time_gap_hours,
+        "cross_time_gap_max_hours": cross_time_gap_max_hours,
+        "cross_time_gap_within_window": cross_time_gap_within_window,
         "cross_1h_at": cross_1h_time,
         "cross_4h_at": cross_4h_time,
+        "cross_1h_close_at": cross_1h_close_time,
+        "cross_4h_close_at": cross_4h_close_time,
         "macd_1h": mac_1h,
         "macd_4h": mac_4h,
         "ltf_label": ltf_label,
         "htf_label": htf_label,
+        "ltf_timeframe": ltf_timeframe,
+        "htf_timeframe": htf_timeframe,
     }
 
     if res_golden:
