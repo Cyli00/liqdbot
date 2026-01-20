@@ -160,16 +160,16 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
             )
             continue
 
-    if res and res["alerts"]:
-        for alert_type, alert_msg in res["alerts"]:
-            if state.can_send_alert(alert_type):
-                all_alerts.append((state, symbol, alert_type, alert_msg))
-            else:
-                cooldown_skipped += 1
-                logger.debug(
-                    f"event=alert_cooldown_skip run={run_id} symbol={symbol} "
-                    f"alert_type={alert_type}"
-                )
+        if res and res["alerts"]:
+            for alert_type, alert_msg in res["alerts"]:
+                if state.can_send_alert(alert_type):
+                    all_alerts.append((state, symbol, alert_type, alert_msg))
+                else:
+                    cooldown_skipped += 1
+                    logger.debug(
+                        f"event=alert_cooldown_skip run={run_id} symbol={symbol} "
+                        f"alert_type={alert_type}"
+                    )
 
     analyze_duration_ms = (time.perf_counter_ns() // 1_000_000) - analyze_start_ms
 
