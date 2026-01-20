@@ -426,8 +426,15 @@ liqdbot/
 │   ├── jobs.py       # 定时任务
 │   ├── alerts.py     # 报警模板
 │   ├── state.py      # 状态管理
-│   └── providers/    # 数据源抽象
-│       ├── base.py   # DataProvider 基类
-│       ├── crypto.py # 加密货币 (ccxt)
-│       └── akshare.py # A股 (akshare)
+│   ├── providers/    # 数据源抽象
+│   │   ├── base.py   # DataProvider 基类
+│   │   ├── crypto.py # 加密货币 (ccxt)
+│   │   └── akshare.py # A股 (akshare)
+│   └── tools/        # 策略工具
+│       ├── cisd.py           # CISD 策略
+│       ├── indicators.py     # 技术指标计算
+│       ├── macd_resonance.py # MACD 共振检测
+│       ├── ma_state_machine.py # MA 状态机
+│       ├── sr_breakout.py    # 支撑阻力突破
+│       └── swing_levels.py   # Swing 高低点
 ```
