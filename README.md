@@ -41,31 +41,21 @@
    ```
 
 3. **Configuration**
-   Create a `.env` file in the root directory:
+   Create a `.env` file in the root directory (only sensitive settings required):
    ```ini
-   # Telegram Config
+   # Telegram Config (Required)
    TG_TOKEN=your_bot_token_here
    TG_CHAT_ID=your_chat_id
 
-   # Crypto Config
-   SYMBOL=BTC/USDT
-   TIMEFRAME=1h
-   FETCH_LIMIT=400
-
-   # A-Share Config
-   AKSHARE_SYMBOL=sh000001      # SSE Composite Index
-
-   # Strategy Params
-   PIVOT_LEN=12
-   EXPIRY_BARS=100
-   LIQUIDITY_LOOKBACK=10
-
-   # MACD Resonance (optional)
-   # Enforce time-gap window between LTF/HTF crosses to qualify as resonance
-   MACD_RESONANCE_ENFORCE_TIME_GAP=false
-   # Window = HTF length (hours) * multiplier
-   MACD_RESONANCE_MAX_GAP_MULTIPLIER=1.0
+   # Optional: Log level (DEBUG, INFO, WARNING, ERROR)
+   # LOG_LEVEL=INFO
    ```
+
+   All other settings have sensible defaults in `config.py`:
+   - Crypto symbols: BTC/USDT, ETH/USDT (edit `DEFAULT_CRYPTO_SYMBOLS` in config.py)
+   - A-Shares: sh000001, sh000688, sz399006
+   - Timeframe: 1h (crypto), 15m (A-shares)
+   - All strategy parameters and thresholds
 
 ### Usage
 
@@ -248,31 +238,21 @@ sudo journalctl -u liqdbot.service -f
    ```
 
 3. **配置环境**
-   在根目录下创建 `.env` 文件：
+   在根目录下创建 `.env` 文件（仅需配置敏感信息）：
    ```ini
-   # Telegram 配置
+   # Telegram 配置（必需）
    TG_TOKEN=your_bot_token_here
    TG_CHAT_ID=your_chat_id
 
-   # 加密货币配置
-   SYMBOL=BTC/USDT
-   TIMEFRAME=1h
-   FETCH_LIMIT=400
-
-   # A股配置
-   AKSHARE_SYMBOL=sh000001      # 上证指数
-
-   # 策略参数
-   PIVOT_LEN=12
-   EXPIRY_BARS=100
-   LIQUIDITY_LOOKBACK=10
-
-   # MACD 共振（可选）
-   # 是否强制要求 LTF/HTF 交叉时间在共振窗口内才触发
-   MACD_RESONANCE_ENFORCE_TIME_GAP=false
-   # 窗口 = HTF 周期小时数 * 倍数
-   MACD_RESONANCE_MAX_GAP_MULTIPLIER=1.0
+   # 可选：日志级别（DEBUG, INFO, WARNING, ERROR）
+   # LOG_LEVEL=INFO
    ```
+
+   所有其他配置均已在 `config.py` 中设置默认值：
+   - 加密货币标的：BTC/USDT、ETH/USDT（编辑 config.py 中的 `DEFAULT_CRYPTO_SYMBOLS`）
+   - A 股标的：sh000001、sh000688、sz399006
+   - 时间周期：1h（加密货币）、15m（A 股）
+   - 所有策略参数和阈值
 
 ### 使用方法
 
