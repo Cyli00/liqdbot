@@ -268,8 +268,8 @@ async def _fetch_and_analyze_symbol(symbol: str, semaphore: asyncio.Semaphore) -
             msg += f"📈 {res_val} | 📉 {sup_val}\n"
 
             extras = []
-            if res.get("rvol_15m") is not None:
-                extras.append(f"量比: `{res['rvol_15m']:.1f}x`")
+            if res.get("rvol") is not None:
+                extras.append(f"量比: `{res['rvol']:.1f}x`")
 
             if res["alerts"]:
                 alert_names = [get_alert_short_name(a[0]) for a in res["alerts"]]

@@ -1326,7 +1326,7 @@ class StrategyEngine:
         if sr_break_alert is not None:
             msgs.append(sr_break_alert)
 
-        rvol_15m = self._compute_current_rvol(symbol, lower_df)
+        rvol = self._compute_current_rvol(symbol, state, lower_df)
 
         result = {
             "symbol": symbol,
@@ -1337,31 +1337,53 @@ class StrategyEngine:
             "nearest_sup": nearest_sup,
             "alerts": msgs,
             "last_bar_idx": last_idx,
-            "rvol_15m": rvol_15m,
+            "rvol": rvol,
         }
         state.last_analysis = result
         return result
 
-    def _compute_current_rvol(self, symbol: str, lower_df) -> float | None:
-        """计算当前15m RVOL（用于状态显示，保留兼容）"""
+    def _compute_current_rvol(
+        self, symbol: str, state: SymbolState, lower_df
+    ) -> float | None:
+        """计算当前 RVOL（用于状态显示）
+
+        - A股：使用 lower_df（15m 数据）
+        - 加密货币：使用 state.cached_coinbase_df（Coinbase 1h 数据）
+        """
         if symbol not in SR_BREAKOUT_SYMBOLS:
-            return None
-        if lower_df is None or len(lower_df) < 3:
             return None
 
         market_type = detect_market_type(symbol)
-        rvol_n = RVOL_N_AKSHARE if market_type == MarketType.A_SHARE else RVOL_N_CRYPTO
 
-        if len(lower_df) < rvol_n + 2:
-            return None
-
-        ldf = lower_df.copy()
-        ldf["vol_sma"] = ldf["volume"].rolling(rvol_n).mean()
-        last_bar = ldf.iloc[-2]
-        vol_sma = last_bar["vol_sma"]
-        if pd.isna(vol_sma) or vol_sma == 0:
-            return None
-        return last_bar["volume"] / vol_sma
+        if market_type == MarketType.A_SHARE:
+            # A股：使用 15m 数据
+            if lower_df is None or len(lower_df) < 3:
+                return None
+            rvol_n = RVOL_N_AKSHARE
+            if len(lower_df) < rvol_n + 2:
+                return None
+            ldf = lower_df.copy()
+            ldf["vol_sma"] = ldf["volume"].rolling(rvol_n).mean()
+            last_bar = ldf.iloc[-2]
+            vol_sma = last_bar["vol_sma"]
+            if pd.isna(vol_sma) or vol_sma == 0:
+                return None
+            return last_bar["volume"] / vol_sma
+        else:
+            # 加密货币：使用 Coinbase 1h 数据
+            coinbase_df = state.cached_coinbase_df
+            if coinbase_df is None or len(coinbase_df) < 3:
+                return None
+            rvol_n = RVOL_N_CRYPTO_1H
+            if len(coinbase_df) < rvol_n + 2:
+                return None
+            cdf = coinbase_df.copy()
+            cdf["vol_sma"] = cdf["volume"].rolling(rvol_n).mean()
+            last_bar = cdf.iloc[-2]
+            vol_sma = last_bar["vol_sma"]
+            if pd.isna(vol_sma) or vol_sma == 0:
+                return None
+            return last_bar["volume"] / vol_sma
 
     async def _fetch_coinbase_1h_data(self, symbol: str) -> pd.DataFrame | None:
         """
