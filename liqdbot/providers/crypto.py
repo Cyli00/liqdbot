@@ -44,6 +44,17 @@ class CryptoProvider(DataProvider):
             )
             return None
 
+    async def fetch_ticker(self, symbol: str) -> dict | None:
+        """获取实时ticker数据（包含最新价格）"""
+        try:
+            ticker = await self.exchange.fetch_ticker(symbol)
+            return ticker
+        except Exception as e:
+            logger.exception(
+                f"event=fetch_ticker_error provider=binance symbol={symbol} err={e}"
+            )
+            return None
+
     async def validate_symbol(self, symbol: str) -> bool:
         try:
             await self.exchange.fetch_ohlcv(symbol, "1h", limit=1)
