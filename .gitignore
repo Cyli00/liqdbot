@@ -4,3 +4,4 @@ uv*
 .venv
 CLAUDE.md
 test.py
+.claude

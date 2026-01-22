@@ -1084,9 +1084,9 @@ class StrategyEngine:
 
         # --- 5. MACD 共振策略 ---
         # 仅当 htf_df 可用时检测
-        # 检测频率：每当新的15分钟K线收盘时检测
+        # 检测频率：A股每15分钟K线收盘检测，加密货币每1小时K线收盘检测
         if htf_df is not None:
-            # 根据市场类型选择时区
+            # 根据市场类型选择时区和检测周期
             market_type = detect_market_type(symbol)
             if market_type == MarketType.A_SHARE:
                 from datetime import datetime
@@ -1095,20 +1095,24 @@ class StrategyEngine:
                 now_ts = pd.Timestamp(
                     datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
                 )
+                # A股使用15分钟周期
+                current_check_ts = now_ts.floor("15min")
+                is_new_check_bar = (
+                    state.last_macd_check_15m_ts is None
+                    or current_check_ts > state.last_macd_check_15m_ts
+                )
             else:
                 now_ts = pd.Timestamp.utcnow().tz_localize(None)
-
-            current_15m_ts = now_ts.floor("15min")
-
-            # 检查是否是新的15分钟K线
-            is_new_15m_bar = (
-                state.last_macd_check_15m_ts is None
-                or current_15m_ts > state.last_macd_check_15m_ts
-            )
+                # 加密货币使用1小时周期
+                current_check_ts = now_ts.floor("1h")
+                is_new_check_bar = (
+                    state.last_macd_check_1h_ts is None
+                    or current_check_ts > state.last_macd_check_1h_ts
+                )
 
             # A股开盘冷却期检查：跳过开盘后前N根K线
             skip_macd_alert = False
-            if market_type == MarketType.A_SHARE and is_new_15m_bar:
+            if market_type == MarketType.A_SHARE and is_new_check_bar:
                 from datetime import time as dt_time, datetime as dt_datetime, timedelta
 
                 current_time = now_ts.time()
@@ -1137,7 +1141,7 @@ class StrategyEngine:
                         f"(当前时间: {current_time})"
                     )
 
-            if is_new_15m_bar and not skip_macd_alert:
+            if is_new_check_bar and not skip_macd_alert:
                 # 只有15分钟K线收盘时才计算 MACD 相关指标
                 df_with_macd = self.calculate_macd_indicators(df)
 
@@ -1156,13 +1160,13 @@ class StrategyEngine:
                         # 检测到共振
                         if state.pending_macd_resonance is not None:
                             # 有待确认的共振，检查是否是同类型
-                            pending_val, pending_info, pending_ts, pending_15m_ts = (
+                            pending_val, pending_info, pending_ts, pending_check_ts = (
                                 state.pending_macd_resonance
                             )
                             # 检查是否是连续的15m K线（间隔应该是15分钟）
                             # 特殊处理：A股午休期间（11:30-13:00），11:30的K线和13:00的K线视为连续
                             time_diff = (
-                                current_15m_ts - pending_15m_ts
+                                current_check_ts - pending_check_ts
                             ).total_seconds() / 60
 
                             # 正常连续：14-16分钟
@@ -1172,8 +1176,8 @@ class StrategyEngine:
                             # 检查 pending 是否是 11:15-11:30 的K线，current 是否是 13:00-13:15 的K线
                             is_lunch_break_consecutive = False
                             if 89 <= time_diff <= 91:  # 约90分钟
-                                pending_time = pending_15m_ts.time()
-                                current_time_check = current_15m_ts.time()
+                                pending_time = pending_check_ts.time()
+                                current_time_check = current_check_ts.time()
                                 from datetime import time as dt_time
 
                                 # pending 应该是 11:15 (代表 11:15-11:30 这根K线)
@@ -1234,7 +1238,7 @@ class StrategyEngine:
                                     res_val,
                                     res_info,
                                     res_ts,
-                                    current_15m_ts,
+                                    current_check_ts,
                                 )
                         else:
                             # 没有待确认的共振，记录当前检测结果
@@ -1242,7 +1246,7 @@ class StrategyEngine:
                                 res_val,
                                 res_info,
                                 res_ts,
-                                current_15m_ts,
+                                current_check_ts,
                             )
                     else:
                         # 没有检测到共振，清除待确认状态
@@ -1279,9 +1283,12 @@ class StrategyEngine:
                         # 记录本次触发的时间戳（无论是否发送都更新，避免重复检测）
                         state.last_macd_resonance_ts = res_ts
 
-            # 更新已检测的15分钟K线时间戳（无论是否跳过检测都要更新）
-            if is_new_15m_bar:
-                state.last_macd_check_15m_ts = current_15m_ts
+            # 更新已检测的K线时间戳（无论是否跳过检测都要更新）
+            if is_new_check_bar:
+                if market_type == MarketType.A_SHARE:
+                    state.last_macd_check_15m_ts = current_check_ts
+                else:
+                    state.last_macd_check_1h_ts = current_check_ts
 
         # --- 6. MA5/MA10 状态机检测 (A股专属，基于日线均线) ---
         ma_alerts = await check_ma_alerts(

@@ -142,7 +142,8 @@ class SymbolState:
         )
         self.last_macd_resonance = 0
         self.last_macd_resonance_ts = None
-        self.last_macd_check_15m_ts = None
+        self.last_macd_check_15m_ts = None  # A股用
+        self.last_macd_check_1h_ts = None  # 加密货币用
         self.last_ma5_alert_bar_ts = None
         self.last_sr_break_15m_ts = None
         # 放量突破 15m tick 门控
