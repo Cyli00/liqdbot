@@ -672,17 +672,15 @@ class StrategyEngine:
                 )
 
         # 检查 Mitigation - 优化版本
-        # 注意：只检查已收盘的K线，排除最后一根未收盘的K线
-        # 这确保 Swing High/Low 被扫掉需要收盘确认
+        # 包含当前K线（last_idx）的 high/low 用于 mitigation 检测
+        # 这样当扫荡发生在当前K线时，Strong CISD 可以在同一周期内被检测到
 
-        # 预计算: 从每个位置开始到 last_idx-1 的 cummax/cummin
-        # 我们需要知道从 idx+1 到 last_idx-1 范围内的最高价和最低价首次触及某水平的位置
-        # 使用前缀最大值数组: prefix_max[i] = max(high[0:i+1])
-        # 那么 max(high[a:b]) = 需要用 segment tree 或其他结构，这里用更简单的方法
+        # 预计算: 从每个位置开始到 last_idx 的 cummax/cummin
+        # 我们需要知道从 idx+1 到 last_idx 范围内的最高价和最低价首次触及某水平的位置
 
         # 简化优化: 预计算从每个位置到 end 的 running max/min 及首次触及索引
         n = len(df)
-        check_end = last_idx  # 不包含 last_idx（当前未收盘K线）
+        check_end = last_idx + 1  # 包含当前K线用于 Strong CISD 判断
 
         # 对于 high levels: 需要找从 created_idx+1 开始，第一个 high >= price 的位置
         # 对于 low levels: 需要找从 created_idx+1 开始，第一个 low <= price 的位置
@@ -853,8 +851,8 @@ class StrategyEngine:
                     }
                 )
 
-        # 检查 Mitigation
-        check_end = last_idx
+        # 检查 Mitigation - 包含当前K线用于 Strong CISD 判断
+        check_end = last_idx + 1
         if check_end > 0:
             suffix_max_high = np.empty(n, dtype=np.float64)
             suffix_min_low = np.empty(n, dtype=np.float64)
@@ -1025,9 +1023,9 @@ class StrategyEngine:
         )
 
         if cisd_result["flag_at_last"] != 0:
-            # 只有当当前信号的时间戳晚于上一次记录的时间戳时才处理
+            # 允许同一根K线内 normal -> strong 的升级提醒
             # cisd_result['flag_at_last'] 对应的是 cisd_last_idx 的信号，即 cisd_current_ts
-            if state.last_cisd_ts is None or cisd_current_ts > state.last_cisd_ts:
+            if state.last_cisd_ts is None or cisd_current_ts >= state.last_cisd_ts:
                 origin_level = cisd_result["origin_level_at_last"]
                 if origin_level is None or (
                     isinstance(origin_level, float) and math.isnan(origin_level)
