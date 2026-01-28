@@ -7,3 +7,4 @@ package-lock.json
 package.json
 pyproject.toml
 CLAUDE.md
+test.py

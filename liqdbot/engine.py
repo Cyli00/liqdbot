@@ -44,8 +44,13 @@ class StrategyEngine:
         
         # 如果有默认标的，自动添加
         if DEFAULT_SYMBOL:
-            self.add_symbol(DEFAULT_SYMBOL)
-            logging.info(f"初始化引擎: 默认监控 {DEFAULT_SYMBOL}")
+            if isinstance(DEFAULT_SYMBOL, str):
+                default_symbols = [DEFAULT_SYMBOL]
+            else:
+                default_symbols = list(DEFAULT_SYMBOL)
+            for symbol in default_symbols:
+                self.add_symbol(symbol)
+            logging.info(f"初始化引擎: 默认监控 {', '.join(default_symbols)}")
     
     def add_symbol(self, symbol: str) -> bool:
         """添加新的监控标的"""

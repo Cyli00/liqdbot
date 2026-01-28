@@ -1,5 +1,5 @@
 """
-配置模块 - 从环境变量加载所有配置
+配置模块 - 仅从环境变量读取 Telegram 配置，其余使用默认值
 """
 import os
 import logging
@@ -20,11 +20,6 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logging.getLogger("telegram.ext._utils.networkloop").setLevel(logging.WARNING)
 
 
-def getenv_bool(key: str, default: str = "false") -> bool:
-    """从环境变量读取布尔值"""
-    return os.getenv(key, default).lower() in ("1", "true", "yes", "y")
-
-
 # --- Telegram 配置 ---
 TG_TOKEN = os.getenv("TG_TOKEN")
 try:
@@ -34,23 +29,24 @@ except (TypeError, ValueError):
     TG_CHAT_ID = 0
 
 # --- 交易配置 ---
-DEFAULT_SYMBOL = os.getenv("SYMBOL", "BTC/USDT")
-TIMEFRAME = os.getenv("TIMEFRAME", "1h")  # 强制基于1小时
-LOWER_TIMEFRAME = os.getenv("LOWER_TIMEFRAME", "15m")  # 用于上下行量
-FETCH_LIMIT = int(os.getenv("FETCH_LIMIT", "400"))  # 主要 K 线拉取数量
+# 支持多个交易对，例如: ["BTC/USDT", "ETH/USDT"]
+DEFAULT_SYMBOL = ["BTC/USDT"]
+TIMEFRAME = "1h"  # 强制基于1小时
+LOWER_TIMEFRAME = "15m"  # 用于上下行量
+FETCH_LIMIT = 400  # 主要 K 线拉取数量
 MONITOR_INTERVAL = 60  # 1分钟监控一次
 
 # --- 策略参数（贴合 Pine） ---
-Z_LENGTH = int(os.getenv("Z_LENGTH", "200"))
-Z_THRESH = float(os.getenv("Z_THRESH", "3.0"))
-TIMEOUT_BARS = int(os.getenv("TIMEOUT_BARS", "50"))  # Supertrend 反转需在该窗口内确认
+Z_LENGTH = 200
+Z_THRESH = 3.0
+TIMEOUT_BARS = 50  # Supertrend 反转需在该窗口内确认
 
-PIVOT_LEN = int(os.getenv("PIVOT_LEN", "12"))
-EXPIRY_BARS = int(os.getenv("EXPIRY_BARS", "100"))
-LIQUIDITY_LOOKBACK = int(os.getenv("LIQUIDITY_LOOKBACK", "10"))
-HIDE_EXPIRED_LEVELS = getenv_bool("HIDE_EXPIRED_LEVELS", "true")
-HIDE_MITIGATED_LEVELS = getenv_bool("HIDE_MITIGATED_LEVELS", "false")
-CISD_TOLERANCE = float(os.getenv("CISD_TOLERANCE", "0.7"))
+PIVOT_LEN = 12
+EXPIRY_BARS = 100
+LIQUIDITY_LOOKBACK = 10
+HIDE_EXPIRED_LEVELS = True
+HIDE_MITIGATED_LEVELS = False
+CISD_TOLERANCE = 0.7
 
 # --- 网络配置 ---
 MAX_RETRIES = 3

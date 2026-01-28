@@ -47,7 +47,11 @@ async def main():
     job_queue.run_repeating(check_market_job, interval=MONITOR_INTERVAL, first=5)
 
     logging.info(f"Bot started. Monitoring interval: {MONITOR_INTERVAL}s.")
-    logging.info(f"Default Symbol: {DEFAULT_SYMBOL if DEFAULT_SYMBOL else 'None'}")
+    if isinstance(DEFAULT_SYMBOL, str):
+        default_symbols = [DEFAULT_SYMBOL] if DEFAULT_SYMBOL else []
+    else:
+        default_symbols = list(DEFAULT_SYMBOL)
+    logging.info(f"Default Symbol: {', '.join(default_symbols) if default_symbols else 'None'}")
     logging.info("Multi-symbol monitoring enabled. Use /add to add symbols, /del to remove symbols, /list to view.")
     
     # 4. 手动管理生命周期
