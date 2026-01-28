@@ -894,10 +894,9 @@ class StrategyEngine:
         # ========== 计算详细信息 ==========
         ts_1h = last_1h['timestamp']
         
-        # 1. 1h 快线倾斜角计算（度数）
+        # 1. 1h 快线斜率计算（标准化）
         # 使用上一根已收盘K线收盘时刻作为 x2，当前时刻作为 x1
         dif_slope_1h = 0.0
-        dif_angle_1h = 0.0
         dif_slope_grade_1h = 0
         slope_valid = False
         
@@ -921,12 +920,9 @@ class StrategyEngine:
             dif_slope_1h = (dif_change / atr_1h) / dt_hours
             slope_valid = True
         
-        if slope_valid:
-            dif_angle_1h = math.degrees(math.atan(dif_slope_1h))
-        else:
+        if not slope_valid:
             fallback_slope = last_1h.get('dif_slope', 0)
             dif_slope_1h = fallback_slope if not pd.isna(fallback_slope) else 0
-            dif_angle_1h = math.degrees(math.atan(dif_slope_1h)) if dif_slope_1h != 0 else 0
         
         # 斜率等级（基于历史分位数）
         if slope_valid:
@@ -995,7 +991,6 @@ class StrategyEngine:
         info = {
             'slope_4h': slope_4h,
             'hist_color': hist_color_4h,
-            'dif_angle_1h': dif_angle_1h,
             'dif_slope_grade_1h': dif_slope_grade_1h,
             'zero_pos_1h': zero_pos_1h,
             'zero_pos_4h': zero_pos_4h,

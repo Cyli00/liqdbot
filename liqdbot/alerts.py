@@ -181,11 +181,9 @@ class AlertMessages:
         }
         state_str = emoji_map.get(hist_state, hist_state)
         
-        # 1h 快线倾斜角和分级
-        dif_angle_1h = info.get('dif_angle_1h', 0)
+        # 1h 快线分级
         dif_slope_grade_1h = info.get('dif_slope_grade_1h', 0)
         grade_desc_1h = AlertMessages._get_slope_grade_desc(dif_slope_grade_1h)
-        angle_emoji = "📈" if dif_angle_1h > 0 else "📉"
         
         # 零轴位置
         zero_pos_1h = info.get('zero_pos_1h', 'unknown')
@@ -209,7 +207,6 @@ class AlertMessages:
             f"💰 当前价: `{price:.2f}`\n"
             f"\n"
             f"**📊 1h 周期:**\n"
-            f"  • 快线倾斜角: {angle_emoji} `{dif_angle_1h:+.2f}°`\n"
             f"  • 动量强度: {grade_desc_1h}\n"
             f"  • 位置: {pos_desc_1h}\n"
             f"\n"
@@ -233,11 +230,9 @@ class AlertMessages:
         }
         state_str = emoji_map.get(hist_state, hist_state)
         
-        # 1h 快线倾斜角和分级
-        dif_angle_1h = info.get('dif_angle_1h', 0)
+        # 1h 快线分级
         dif_slope_grade_1h = info.get('dif_slope_grade_1h', 0)
         grade_desc_1h = AlertMessages._get_slope_grade_desc(dif_slope_grade_1h)
-        angle_emoji = "📈" if dif_angle_1h > 0 else "📉"
         
         # 零轴位置
         zero_pos_1h = info.get('zero_pos_1h', 'unknown')
@@ -261,7 +256,6 @@ class AlertMessages:
             f"💰 当前价: `{price:.2f}`\n"
             f"\n"
             f"**📊 1h 周期:**\n"
-            f"  • 快线倾斜角: {angle_emoji} `{dif_angle_1h:+.2f}°`\n"
             f"  • 动量强度: {grade_desc_1h}\n"
             f"  • 位置: {pos_desc_1h}\n"
             f"\n"
