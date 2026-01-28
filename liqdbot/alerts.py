@@ -4,62 +4,15 @@ Alert 消息模板 - 定义所有 Telegram 通知消息的格式
 
 
 class AlertMessages:
-    """定义所有 Alert 消息模板，区分 Liquidation Reversal 和 CISD 策略"""
+    """定义所有 Alert 消息模板"""
     
     # Alert 类型常量
-    TYPE_SHORT_LIQ_SPIKE = "short_liq_spike"
-    TYPE_LONG_LIQ_SPIKE = "long_liq_spike"
-    TYPE_BULLISH_ST_START = "bullish_st_start"
-    TYPE_BEARISH_ST_START = "bearish_st_start"
     TYPE_SWING_HIGH_MITIGATION = "swing_high_mitigation"
     TYPE_SWING_LOW_MITIGATION = "swing_low_mitigation"
     TYPE_BEARISH_NORMAL_CISD = "bearish_normal_cisd"
     TYPE_BULLISH_NORMAL_CISD = "bullish_normal_cisd"
     TYPE_BEARISH_STRONG_CISD = "bearish_strong_cisd"
     TYPE_BULLISH_STRONG_CISD = "bullish_strong_cisd"
-    
-    # ==================== Liquidation Reversal 策略 ====================
-    @staticmethod
-    def short_liq_spike(symbol: str, price: float) -> str:
-        """Short Liquidation Spike - 空头趋势中检测到巨额上行量"""
-        return (
-            f"🔔 **流动性反转，向下插针**\n"
-            f"📍 标的: `{symbol}`\n"
-            f"💰 价格: `{price:.2f}`\n"
-            f"📝 说明: 空头趋势中出现巨额买单（可能诱多/空头止损）"
-        )
-    
-    @staticmethod
-    def long_liq_spike(symbol: str, price: float) -> str:
-        """Long Liquidation Spike - 多头趋势中检测到巨额下行量"""
-        return (
-            f"🔔 **流动性反转，向上插针**\n"
-            f"📍 标的: `{symbol}`\n"
-            f"💰 价格: `{price:.2f}`\n"
-            f"📝 说明: 多头趋势中出现巨额卖单（可能诱空/多头止损）"
-        )
-    
-    @staticmethod
-    def bullish_st_start(symbol: str, price: float, supertrend: float) -> str:
-        """Bullish ST Start - Supertrend 翻多（挤仓确认）"""
-        return (
-            f"🚀 **短期趋势反转，多头启动**\n"
-            f"📍 标的: `{symbol}`\n"
-            f"💰 价格: `{price:.2f}`\n"
-            f"📈 Supertrend: `{supertrend:.2f}`\n"
-            f"📝 说明: 挤仓后 Supertrend 翻多确认，趋势反转向上"
-        )
-    
-    @staticmethod
-    def bearish_st_start(symbol: str, price: float, supertrend: float) -> str:
-        """Bearish ST Start - Supertrend 翻空（挤仓确认）"""
-        return (
-            f"📉 **短期趋势反转，空头启动**\n"
-            f"📍 标的: `{symbol}`\n"
-            f"💰 价格: `{price:.2f}`\n"
-            f"📈 Supertrend: `{supertrend:.2f}`\n"
-            f"📝 说明: 挤仓后 Supertrend 翻空确认，趋势反转向下"
-        )
     
     # ==================== CISD 策略 ====================
     @staticmethod

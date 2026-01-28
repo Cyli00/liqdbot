@@ -188,9 +188,14 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 格式化输出
         res_txt = f"`{res['nearest_res']:.2f}`" if res['nearest_res'] else "无"
         sup_txt = f"`{res['nearest_sup']:.2f}`" if res['nearest_sup'] else "无"
+        trend_support = res.get('trend_support')
+        if trend_support is None or trend_support != trend_support:
+            trend_support_txt = "无"
+        else:
+            trend_support_txt = f"`{trend_support:.2f}`"
         
         msg = f"📊 **{res['symbol']}** | `{res['price']:.2f}`\n"
-        msg += f"🧭 {res['trend_dir']} | 趋势线: `{res['trend_support']:.2f}`\n"
+        msg += f"🧭 {res.get('trend_dir', '未知')} | 趋势线: {trend_support_txt}\n"
         msg += f"⬆️ 上方阻力: {res_txt}\n"
         msg += f"⬇️ 下方支撑: {sup_txt}\n"
         
