@@ -30,7 +30,7 @@ except (TypeError, ValueError):
 
 # --- 交易配置 ---
 # 支持多个交易对，例如: ["BTC/USDT", "ETH/USDT"]
-DEFAULT_SYMBOL = ["BTC/USDT"]
+DEFAULT_SYMBOL = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 TIMEFRAME = "1h"  # 强制基于1小时
 LOWER_TIMEFRAME = "15m"  # 用于上下行量
 FETCH_LIMIT = 400  # 主要 K 线拉取数量
