@@ -188,7 +188,14 @@ class StrategyEngine:
         mapping = {"s": "s", "m": "min", "h": "h", "d": "D", "w": "W"}
         return f"{value}{mapping.get(unit, 'h')}"
 
-    def is_new_bar_closed(self, df, state: SymbolState, timeframe: str) -> bool:
+    def is_new_bar_closed(
+        self,
+        df,
+        state: SymbolState,
+        timeframe: str,
+        *,
+        update_state: bool = True,
+    ) -> bool:
         """
         检测指定时间周期的K线是否收盘（是否有新的K线）
 
@@ -196,6 +203,7 @@ class StrategyEngine:
             df: K线数据
             state: 标的状态
             timeframe: 时间周期 ('15m', '1h', '4h')
+            update_state: 是否更新 state 中记录的 last_*_bar_ts（默认 True）
 
         Returns:
             bool: True表示有新K线收盘，需要重新计算指标
@@ -219,8 +227,8 @@ class StrategyEngine:
         # 如果是首次检查或时间戳不同，说明有新K线
         is_new = last_recorded_ts is None or last_bar_ts != last_recorded_ts
 
-        # 更新状态
-        if is_new:
+        # 更新状态（可选，避免被上游“提前消耗”新K线标记）
+        if is_new and update_state:
             if timeframe == "15m":
                 state.last_15m_bar_ts = last_bar_ts
             elif timeframe == "1h":
@@ -564,7 +572,11 @@ class StrategyEngine:
                 check_timeframe = "1h"
 
             # 检查是否有新的主周期K线
-            is_new_bar = self.is_new_bar_closed(df, state, check_timeframe)
+            # 仅检查是否有新K线，避免提前更新 last_*_bar_ts
+            # 否则会导致后续 update_swing_levels 误判“无新K线”而跳过更新
+            is_new_bar = self.is_new_bar_closed(
+                df, state, check_timeframe, update_state=False
+            )
 
             # 如果没有新K线，且df已经有指标列，就不需要重新计算
             has_indicators = all(col in df.columns for col in ["is_pivot_high", "is_pivot_low"])
