@@ -1160,8 +1160,6 @@ class StrategyEngine:
         last_candle = df.iloc[-1]
         current_price = last_candle['close']
         current_ts = last_candle['timestamp']
-        trend_dir = "未知"
-        trend_support = None
 
         # 更新 Pivot 数据库
         last_closed_idx = self._get_last_closed_idx(df)
@@ -1291,8 +1289,6 @@ class StrategyEngine:
         result = {
             'symbol': symbol,
             'price': current_price,
-            'trend_dir': trend_dir,
-            'trend_support': trend_support,
             'nearest_res': nearest_res,
             'nearest_sup': nearest_sup,
             'alerts': msgs,
