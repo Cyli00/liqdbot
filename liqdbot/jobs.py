@@ -11,6 +11,7 @@ from telegram.ext import ContextTypes
 from telegram.error import NetworkError, TimedOut, RetryAfter
 
 from .engine import engine
+from .alerts import AlertMessages
 from .config import TG_CHAT_ID, MAX_RETRIES, RETRY_DELAY
 
 
@@ -107,13 +108,6 @@ async def fetch_spot_premium(max_age: int = SPOT_PREMIUM_CACHE_TTL):
         await okx.close()
 
 
-def format_spot_premium_line(premium) -> str:
-    """格式化现货溢价文本"""
-    if premium is None:
-        return "💱 现货溢价: `N/A`"
-    return f"💱 现货溢价: `{premium * 100:+.2f}%`"
-
-
 async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
     """
     自动任务：每分钟运行，并行获取数据，顺序处理分析和发送
@@ -169,15 +163,18 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
                     logging.info(f"[{symbol}] Alert {alert_type} 在冷却期内或强度不足，跳过发送")
     
     # 3. 顺序发送所有alerts
-    spot_premium_line = None
-    if all_alerts:
+    premium = None
+    needs_premium = any(
+        alert_type in AlertMessages.PREMIUM_ELIGIBLE_TYPES
+        for _, alert_type, _ in all_alerts
+    )
+    if needs_premium:
         premium = await fetch_spot_premium()
-        spot_premium_line = format_spot_premium_line(premium)
 
     for state, alert_type, alert_msg in all_alerts:
         final_msg = alert_msg.rstrip()
-        if spot_premium_line:
-            final_msg = f"{final_msg}\n{spot_premium_line}"
+        if alert_type in AlertMessages.PREMIUM_ELIGIBLE_TYPES:
+            final_msg = AlertMessages.append_spot_premium(final_msg, premium)
         success = await send_telegram_with_retry(context.bot, TG_CHAT_ID, final_msg)
         if success:
             state.mark_alert_sent(alert_type)
