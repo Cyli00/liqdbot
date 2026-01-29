@@ -3,16 +3,27 @@
 """
 import asyncio
 import logging
+import time
 from typing import Any
+
+import ccxt.async_support as ccxt
 from telegram.ext import ContextTypes
 from telegram.error import NetworkError, TimedOut, RetryAfter
 
 from .engine import engine
+from .alerts import AlertMessages
 from .config import TG_CHAT_ID, MAX_RETRIES, RETRY_DELAY
 
 
 # 并行获取数据的最大并发数（避免API限速）
 MAX_CONCURRENT_FETCHES = 4
+
+# 现货溢价缓存 (秒)
+SPOT_PREMIUM_CACHE_TTL = 30
+_SPOT_PREMIUM_CACHE = {
+    "ts": 0.0,
+    "value": None,
+}
 
 
 async def send_telegram_with_retry(bot, chat_id: int, text: str, max_retries: int = MAX_RETRIES) -> bool:
@@ -53,6 +64,48 @@ async def fetch_symbol_data(symbol: str) -> tuple[str, Any, Any, Any]:
     except Exception as e:
         logging.error(f"获取 {symbol} 数据失败: {e}")
         return (symbol, None, None, None)
+
+
+async def fetch_spot_premium(max_age: int = SPOT_PREMIUM_CACHE_TTL):
+    """获取 BTC 现货溢价 (Coinbase vs Binance/OKX 平均)，带缓存"""
+    now = time.time()
+    cached_val = _SPOT_PREMIUM_CACHE.get("value")
+    cached_ts = _SPOT_PREMIUM_CACHE.get("ts", 0.0)
+    if cached_val is not None and (now - cached_ts) < max_age:
+        return cached_val
+
+    coinbase = ccxt.coinbase()
+    binance = ccxt.binance()
+    okx = ccxt.okx()
+
+    try:
+        coinbase_ticker, binance_ticker, okx_ticker = await asyncio.gather(
+            coinbase.fetch_ticker("BTC/USD"),
+            binance.fetch_ticker("BTC/USDT"),
+            okx.fetch_ticker("BTC/USDT")
+        )
+        coinbase_price = coinbase_ticker.get("last") or coinbase_ticker.get("close")
+        binance_price = binance_ticker.get("last") or binance_ticker.get("close")
+        okx_price = okx_ticker.get("last") or okx_ticker.get("close")
+
+        if coinbase_price is None or binance_price is None or okx_price is None:
+            raise ValueError("missing price")
+        if coinbase_price == 0:
+            raise ValueError("coinbase price is zero")
+
+        avg_price = (binance_price + okx_price) / 2
+        premium = (coinbase_price - avg_price) / coinbase_price
+
+        _SPOT_PREMIUM_CACHE["ts"] = now
+        _SPOT_PREMIUM_CACHE["value"] = premium
+        return premium
+    except Exception as e:
+        logging.warning(f"现货溢价获取失败: {e}")
+        return None
+    finally:
+        await coinbase.close()
+        await binance.close()
+        await okx.close()
 
 
 async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
@@ -110,8 +163,13 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
                     logging.info(f"[{symbol}] Alert {alert_type} 在冷却期内或强度不足，跳过发送")
     
     # 3. 顺序发送所有alerts
+    premium = None
+    if all_alerts:
+        premium = await fetch_spot_premium()
+
     for state, alert_type, alert_msg in all_alerts:
-        success = await send_telegram_with_retry(context.bot, TG_CHAT_ID, alert_msg)
+        final_msg = AlertMessages.append_spot_premium(alert_msg, premium)
+        success = await send_telegram_with_retry(context.bot, TG_CHAT_ID, final_msg)
         if success:
             state.mark_alert_sent(alert_type)
             await asyncio.sleep(1)  # 避免Telegram限速

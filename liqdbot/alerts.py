@@ -84,6 +84,21 @@ class AlertMessages:
     # ==================== MACD 共振策略 ====================
     TYPE_MACD_RESONANCE_GOLDEN = "macd_resonance_golden"
     TYPE_MACD_RESONANCE_DEATH = "macd_resonance_death"
+
+    # 现货溢价应用于所有 Alert
+
+    @staticmethod
+    def format_spot_premium_line(premium) -> str:
+        """格式化现货溢价文本"""
+        if premium is None:
+            return "💱 现货溢价: `N/A`"
+        return f"💱 现货溢价: `{premium * 100:+.2f}%`"
+
+    @staticmethod
+    def append_spot_premium(message: str, premium) -> str:
+        """在 Alert 消息末尾追加现货溢价"""
+        message = message.rstrip()
+        return f"{message}\n{AlertMessages.format_spot_premium_line(premium)}"
     
     @staticmethod
     def _get_slope_grade_desc(grade: int) -> str:
