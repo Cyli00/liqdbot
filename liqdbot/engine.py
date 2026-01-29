@@ -366,7 +366,7 @@ class StrategyEngine:
     
     def calculate_macd_indicators(self, df):
         """
-        计算 MACD 相关指标（仅在 15 分钟 K 线收盘确认时调用）
+        计算 MACD 相关指标（仅在 1 小时 K 线收盘确认时调用）
         包括: MACD, ATR, DIF斜率, 分位数分级
         """
         if df is None or df.empty:
@@ -1032,19 +1032,22 @@ class StrategyEngine:
         cross_4h_time, cross_4h_is_golden = self._find_last_cross_info(
             htf_df, 'MACD', 'Signal'
         )
-        
+
+        # 仅保留与当前共振方向一致的交叉时间
+        if cross_1h_is_golden != is_golden:
+            cross_1h_time = None
+        if cross_4h_is_golden != is_golden:
+            cross_4h_time = None
+
         cross_1h_time_utc = self._to_utc_ts(cross_1h_time)
         cross_4h_time_utc = self._to_utc_ts(cross_4h_time)
-        if (cross_1h_time_utc is not None and cross_4h_time_utc is not None and
-                cross_1h_is_golden == cross_4h_is_golden == is_golden):
+        if cross_1h_time_utc is not None and cross_4h_time_utc is not None:
             time_diff = abs((cross_1h_time_utc - cross_4h_time_utc).total_seconds())
             cross_time_gap_hours = time_diff / 3600
             max_gap_hours = self._timeframe_to_minutes(self.htf_timeframe) / 60.0
             if cross_time_gap_hours > max_gap_hours:
                 cross_time_gap_hours = None
         else:
-            cross_1h_time = None
-            cross_4h_time = None
             cross_time_gap_hours = None
         
         # 辅助数据
@@ -1239,30 +1242,46 @@ class StrategyEngine:
 
         # --- 3. MACD 共振策略 ---
         # 仅当 htf_df 可用时检测
-        # 检测频率：每当新的15分钟K线收盘时检测
+        # 检测频率：每当新的1小时K线收盘时检测
         if htf_df is not None:
-            # 计算当前时间对应的已收盘15分钟K线时间戳
-            # 当前时间 floor 到15分钟边界，即为最近已收盘的K线时间
-            current_15m_ts = pd.Timestamp.now(tz='UTC').floor('15min')
-            
-            # 检查是否是新的15分钟K线
-            is_new_15m_bar = (
-                state.last_macd_check_15m_ts is None or 
-                current_15m_ts > state.last_macd_check_15m_ts
+            # 使用最近已收盘的1小时K线时间戳作为检测节奏
+            current_1h_ts = None
+            if last_closed_idx is not None and last_closed_idx >= 0:
+                current_1h_ts = self._to_utc_ts(df['timestamp'].iloc[last_closed_idx])
+
+            # 检查是否是新的1小时K线
+            is_new_1h_bar = (
+                current_1h_ts is not None and (
+                    state.last_macd_check_1h_ts is None or
+                    current_1h_ts > state.last_macd_check_1h_ts
+                )
             )
             
-            if is_new_15m_bar:
-                # 只有15分钟K线收盘时才计算 MACD 相关指标
+            if is_new_1h_bar:
+                # 只有1小时K线收盘时才计算 MACD 相关指标
                 df_with_macd = self.calculate_macd_indicators(df)
+                if last_closed_idx is not None and last_closed_idx < len(df_with_macd) - 1:
+                    # 只用已收盘的1小时K线做判断，避免未收盘数据反复波动
+                    df_with_macd = df_with_macd.iloc[:last_closed_idx + 1]
                 
                 res_val, res_info, res_ts = self.check_macd_resonance(df_with_macd, htf_df)
                 
                 # 使用 K线时间戳去重，确保同一根K线只触发一次
                 if res_val != 0 and res_ts is not None:
-                    # 检查是否是新的1h K线（时间戳不同于上次触发）
+                    # 检查是否是新的交叉（按交叉时间戳去重）
+                    cross_ts_candidates = []
+                    cross_1h_at = res_info.get('cross_1h_at')
+                    cross_4h_at = res_info.get('cross_4h_at')
+                    for ts in (cross_1h_at, cross_4h_at):
+                        ts_utc = self._to_utc_ts(ts)
+                        if ts_utc is not None:
+                            cross_ts_candidates.append(ts_utc)
+                    cross_ts = max(cross_ts_candidates) if cross_ts_candidates else self._to_utc_ts(res_ts)
                     is_new_bar = (
-                        state.last_macd_resonance_ts is None or 
-                        res_ts > state.last_macd_resonance_ts
+                        cross_ts is not None and (
+                            state.last_macd_resonance_ts is None or 
+                            cross_ts > state.last_macd_resonance_ts
+                        )
                     )
                     
                     if is_new_bar:
@@ -1276,11 +1295,11 @@ class StrategyEngine:
                                 AlertMessages.TYPE_MACD_RESONANCE_DEATH,
                                 AlertMessages.macd_resonance_death(symbol, current_price, res_info)
                             ))
-                        # 记录本次触发的时间戳
-                        state.last_macd_resonance_ts = res_ts
+                        # 记录本次触发的交叉时间戳
+                        state.last_macd_resonance_ts = cross_ts
                 
-                # 更新已检测的15分钟K线时间戳
-                state.last_macd_check_15m_ts = current_15m_ts
+                # 更新已检测的1小时K线时间戳
+                state.last_macd_check_1h_ts = current_1h_ts
 
         # --- 4. 计算当前最近的支撑/阻力（使用最近的流动性扫荡点） ---
         nearest_res = self._find_recent_sweep_level(state, current_price, 'high', 'above')
