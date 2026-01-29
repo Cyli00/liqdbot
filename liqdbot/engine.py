@@ -13,7 +13,7 @@ from .config import (
     DEFAULT_SYMBOL, TIMEFRAME, LOWER_TIMEFRAME, FETCH_LIMIT,
     PIVOT_LEN, EXPIRY_BARS,
     LIQUIDITY_LOOKBACK, HIDE_EXPIRED_LEVELS, HIDE_MITIGATED_LEVELS,
-    CISD_TOLERANCE
+    CISD_TOLERANCE, CISD_DEDUP_ENABLED
 )
 from .state import SymbolState
 from .alerts import AlertMessages
@@ -115,6 +115,23 @@ class StrategyEngine:
         unit = m.group(2).lower()
         mapping = {"s": "s", "m": "min", "h": "h", "d": "D", "w": "W"}
         return f"{value}{mapping.get(unit, 'h')}"
+
+    def _get_last_closed_idx(self, df) -> int | None:
+        """判断最后一根K线是否已收盘，返回最近已收盘K线索引"""
+        if df is None or df.empty:
+            return None
+        last_idx = len(df) - 1
+        last_ts = pd.Timestamp(df['timestamp'].iloc[last_idx])
+        if last_ts.tzinfo is None:
+            last_ts = last_ts.tz_localize('UTC')
+        else:
+            last_ts = last_ts.tz_convert('UTC')
+        tf_minutes = self._timeframe_to_minutes(TIMEFRAME)
+        close_time = last_ts + pd.Timedelta(minutes=tf_minutes)
+        now = pd.Timestamp.now(tz='UTC')
+        if now >= close_time:
+            return last_idx
+        return last_idx - 1
 
     @staticmethod
     def _ohlcv_to_df(ohlcv):
@@ -386,7 +403,7 @@ class StrategyEngine:
 
         return df
 
-    def update_swing_levels(self, df, state: SymbolState):
+    def update_swing_levels(self, df, state: SymbolState, *, last_closed_idx: int | None = None):
         """
         更新 Swing 高低点（支撑/阻力位）
         
@@ -408,9 +425,11 @@ class StrategyEngine:
         timestamps = df['timestamp'].to_numpy()
         
         end_scan_idx = len(df) - pivot_len
+        high_levels = []
+        low_levels = []
         for i in range(start_idx, end_scan_idx):
             if pivot_high_mask[i]:
-                state.swing_levels.append({
+                high_levels.append({
                     'type': 'high', 
                     'price': high_vals[i], 
                     'created_at': timestamps[i], 
@@ -420,7 +439,7 @@ class StrategyEngine:
                 })
             
             if pivot_low_mask[i]:
-                state.swing_levels.append({
+                low_levels.append({
                     'type': 'low', 
                     'price': low_vals[i], 
                     'created_at': timestamps[i], 
@@ -428,19 +447,24 @@ class StrategyEngine:
                     'mitigated': False,
                     'mitigated_at': None
                 })
-        
+        state.swing_levels = sorted(high_levels + low_levels, key=lambda x: x['created_idx'])
+
         # 检查 Mitigation - 优化版本
-        # 注意：只检查已收盘的K线，排除最后一根未收盘的K线
-        # 这确保 Swing High/Low 被扫掉需要1小时收盘确认
+        # 注意：只检查已收盘的K线
         
-        # 预计算: 从每个位置开始到 last_idx-1 的 cummax/cummin
-        # 我们需要知道从 idx+1 到 last_idx-1 范围内的最高价和最低价首次触及某水平的位置
+        # 预计算: 从每个位置开始到 check_end-1 的 cummax/cummin
+        # 我们需要知道从 idx+1 到 check_end-1 范围内的最高价和最低价首次触及某水平的位置
         # 使用前缀最大值数组: prefix_max[i] = max(high[0:i+1])
         # 那么 max(high[a:b]) = 需要用 segment tree 或其他结构，这里用更简单的方法
         
-        # 简化优化: 预计算从每个位置到 end 的 running max/min 及首次触及索引
+        # 简化优化: 预计算从每个位置到 check_end-1 的 running max/min 及首次触及索引
         n = len(df)
-        check_end = last_idx  # 不包含 last_idx（当前未收盘K线）
+        if last_closed_idx is None:
+            last_closed_idx = self._get_last_closed_idx(df)
+        if last_closed_idx is None:
+            check_end = 0
+        else:
+            check_end = min(n, last_closed_idx + 1)
         
         # 对于 high levels: 需要找从 created_idx+1 开始，第一个 high >= price 的位置
         # 对于 low levels: 需要找从 created_idx+1 开始，第一个 low <= price 的位置
@@ -472,10 +496,13 @@ class StrategyEngine:
         
         for level in state.swing_levels:
             age = last_idx - level['created_idx']
-            if self.hide_expired_levels and age > self.expiry_bars:
+            if age > self.expiry_bars:
+                if self.hide_expired_levels:
+                    continue
+                active_levels.append(level)
                 continue
 
-            start_check_idx = level['created_idx'] + 1
+            start_check_idx = level['created_idx'] + pivot_len
             
             if start_check_idx >= check_end:
                 # 还没有足够的收盘K线来判断 mitigation
@@ -507,7 +534,13 @@ class StrategyEngine:
 
             active_levels.append(level)
 
-        state.swing_levels = sorted(active_levels, key=lambda x: x['created_at'])
+        high_levels = [lvl for lvl in active_levels if lvl['type'] == 'high']
+        low_levels = [lvl for lvl in active_levels if lvl['type'] == 'low']
+        if len(high_levels) > 100:
+            high_levels = high_levels[-100:]
+        if len(low_levels) > 100:
+            low_levels = low_levels[-100:]
+        state.swing_levels = sorted(high_levels + low_levels, key=lambda x: x['created_at'])
 
     def calculate_htf_indicators(self, df):
         """计算高周期 (4h) 指标: MACD, Signal Slope, Histogram Color"""
@@ -985,7 +1018,8 @@ class StrategyEngine:
         trend_support = None
 
         # 更新 Pivot 数据库
-        self.update_swing_levels(df, state)
+        last_closed_idx = self._get_last_closed_idx(df)
+        self.update_swing_levels(df, state, last_closed_idx=last_closed_idx)
 
         cisd_result = self.detect_cisd(df)
 
@@ -993,7 +1027,7 @@ class StrategyEngine:
 
         # --- 1. CISD 策略: Swing High/Low Mitigation Alerts ---
         # 注意：由于 mitigation 只检查已收盘的K线，需要检查上一根收盘K线
-        prev_closed_idx = last_idx - 1
+        prev_closed_idx = last_closed_idx if last_closed_idx is not None else last_idx - 1
         for level in state.swing_levels:
             if level.get('mitigated_at') == prev_closed_idx:
                 mitigated_ts = level.get('mitigated_at_ts')
@@ -1051,7 +1085,10 @@ class StrategyEngine:
                             alert_type = AlertMessages.TYPE_BULLISH_NORMAL_CISD
                             alert_msg = AlertMessages.bullish_normal_cisd(symbol, current_price, origin_level)
 
-                    if state.should_send_cisd_origin_alert(cisd_result['flag_at_last'], origin_level, alert_type):
+                    if CISD_DEDUP_ENABLED:
+                        if state.should_send_cisd_origin_alert(cisd_result['flag_at_last'], origin_level, alert_type):
+                            msgs.append((alert_type, alert_msg))
+                    else:
                         msgs.append((alert_type, alert_msg))
 
                     state.last_cisd_ts = current_ts
