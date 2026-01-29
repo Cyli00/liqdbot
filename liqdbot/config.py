@@ -33,7 +33,7 @@ except (TypeError, ValueError):
 DEFAULT_SYMBOL = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 TIMEFRAME = "1h"  # 强制基于1小时
 LOWER_TIMEFRAME = "15m"  # 用于上下行量
-FETCH_LIMIT = 400  # 主要 K 线拉取数量
+FETCH_LIMIT = 200  # 主要 K 线拉取数量
 MONITOR_INTERVAL = 60  # 1分钟监控一次
 
 # --- 策略参数（贴合 Pine） ---

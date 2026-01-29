@@ -427,8 +427,6 @@ class StrategyEngine:
         pivot_len = self.pivot_len
         last_idx = len(df) - 1
         start_idx = pivot_len
-        if self.hide_expired_levels:
-            start_idx = max(start_idx, last_idx - self.expiry_bars)
         
         # 向量化提取 pivot 点（避免逐行 df.loc 访问）
         pivot_high_mask = df['is_pivot_high'].to_numpy()
@@ -509,17 +507,14 @@ class StrategyEngine:
         
         for level in state.swing_levels:
             age = last_idx - level['created_idx']
-            if age > self.expiry_bars:
-                if self.hide_expired_levels:
-                    continue
-                active_levels.append(level)
-                continue
+            expired = self.hide_expired_levels and age > self.expiry_bars
 
             start_check_idx = level['created_idx'] + pivot_len
             
             if start_check_idx >= check_end:
                 # 还没有足够的收盘K线来判断 mitigation
-                active_levels.append(level)
+                if not expired:
+                    active_levels.append(level)
                 continue
             
             price = level['price']
@@ -545,7 +540,27 @@ class StrategyEngine:
                             level['mitigated_at_ts'] = timestamps[touch_idx]
                             break
 
-            active_levels.append(level)
+            if level.get('mitigated'):
+                sweep_key = (level['type'], round(float(level['price']), 4), level.get('mitigated_at_ts'))
+                if sweep_key not in state.sweep_history_keys:
+                    state.sweep_history_keys.add(sweep_key)
+                    state.sweep_history.append({
+                        'type': level['type'],
+                        'price': level['price'],
+                        'mitigated_at': level.get('mitigated_at'),
+                        'mitigated_at_ts': level.get('mitigated_at_ts'),
+                    })
+
+            if not expired:
+                active_levels.append(level)
+
+        if len(state.sweep_history) > 300:
+            state.sweep_history.sort(key=lambda x: x.get('mitigated_at', -1), reverse=True)
+            state.sweep_history = state.sweep_history[:300]
+            state.sweep_history_keys = {
+                (x['type'], round(float(x['price']), 4), x.get('mitigated_at_ts'))
+                for x in state.sweep_history
+            }
 
         high_levels = [lvl for lvl in active_levels if lvl['type'] == 'high']
         low_levels = [lvl for lvl in active_levels if lvl['type'] == 'low']
@@ -628,25 +643,116 @@ class StrategyEngine:
         查找最近的流动性扫荡点（按 mitigated_at 最近）
         direction: 'above'（上方阻力）或 'below'（下方支撑）
         """
+        return self._find_recent_sweep_level_from_history(
+            state.sweep_history, current_price, level_type, direction
+        )
+
+    def _find_recent_sweep_level_from_history(self, sweep_history, current_price: float, level_type: str, direction: str):
         candidates = []
-        for lvl in state.swing_levels:
+        for lvl in sweep_history:
             if lvl['type'] != level_type:
-                continue
-            mitigated_at = lvl.get('mitigated_at')
-            if mitigated_at is None:
                 continue
             price = lvl['price']
             if direction == 'above' and price <= current_price:
                 continue
             if direction == 'below' and price >= current_price:
                 continue
-            candidates.append((mitigated_at, price))
+            candidates.append((lvl.get('mitigated_at', -1), price))
 
         if not candidates:
             return None
 
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
+
+    def build_sweep_history_from_df(self, df):
+        """
+        根据传入 df 重新计算历史流动性扫荡点（不依赖 state 缓存）
+        返回 sweep_history 列表
+        """
+        if df is None or df.empty:
+            return []
+
+        if 'is_pivot_high' not in df.columns or 'is_pivot_low' not in df.columns:
+            df = self.calculate_indicators(df)
+
+        n = len(df)
+        last_idx = n - 1
+        pivot_len = self.pivot_len
+
+        last_closed_idx = self._get_last_closed_idx(df)
+        if last_closed_idx is None:
+            return []
+        check_end = min(n, last_closed_idx + 1)
+        if check_end <= 0:
+            return []
+
+        pivot_high_mask = df['is_pivot_high'].to_numpy()
+        pivot_low_mask = df['is_pivot_low'].to_numpy()
+        high_vals = df['high'].to_numpy()
+        low_vals = df['low'].to_numpy()
+        timestamps = df['timestamp'].to_numpy()
+
+        end_scan_idx = n - pivot_len
+        levels = []
+        for i in range(pivot_len, end_scan_idx):
+            if pivot_high_mask[i]:
+                levels.append({
+                    'type': 'high',
+                    'price': high_vals[i],
+                    'created_idx': i,
+                    'mitigated_at': None,
+                })
+            if pivot_low_mask[i]:
+                levels.append({
+                    'type': 'low',
+                    'price': low_vals[i],
+                    'created_idx': i,
+                    'mitigated_at': None,
+                })
+
+        if not levels:
+            return []
+
+        suffix_max_high = np.empty(n, dtype=np.float64)
+        suffix_min_low = np.empty(n, dtype=np.float64)
+        suffix_max_high[check_end - 1] = high_vals[check_end - 1]
+        suffix_min_low[check_end - 1] = low_vals[check_end - 1]
+        for i in range(check_end - 2, -1, -1):
+            suffix_max_high[i] = max(high_vals[i], suffix_max_high[i + 1])
+            suffix_min_low[i] = min(low_vals[i], suffix_min_low[i + 1])
+
+        sweep_history = []
+        for level in levels:
+            start_check_idx = level['created_idx'] + pivot_len
+            if start_check_idx >= check_end:
+                continue
+            price = level['price']
+            if level['type'] == 'high':
+                if suffix_max_high[start_check_idx] >= price:
+                    for touch_idx in range(start_check_idx, check_end):
+                        if high_vals[touch_idx] >= price:
+                            sweep_history.append({
+                                'type': 'high',
+                                'price': price,
+                                'mitigated_at': touch_idx,
+                                'mitigated_at_ts': timestamps[touch_idx],
+                            })
+                            break
+            else:
+                if suffix_min_low[start_check_idx] <= price:
+                    for touch_idx in range(start_check_idx, check_end):
+                        if low_vals[touch_idx] <= price:
+                            sweep_history.append({
+                                'type': 'low',
+                                'price': price,
+                                'mitigated_at': touch_idx,
+                                'mitigated_at_ts': timestamps[touch_idx],
+                            })
+                            break
+
+        sweep_history.sort(key=lambda x: x.get('mitigated_at', -1), reverse=True)
+        return sweep_history
 
     def detect_cisd(self, df):
         """

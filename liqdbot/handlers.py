@@ -184,6 +184,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not res:
             all_msgs.append(f"❌ {symbol}: 分析失败")
             continue
+
+        sweep_history = engine.build_sweep_history_from_df(df)
+        current_price = res['price']
+        nearest_res = engine._find_recent_sweep_level_from_history(
+            sweep_history, current_price, 'high', 'above'
+        )
+        nearest_sup = engine._find_recent_sweep_level_from_history(
+            sweep_history, current_price, 'low', 'below'
+        )
+        res['nearest_res'] = nearest_res
+        res['nearest_sup'] = nearest_sup
         
         # 格式化输出
         res_txt = f"`{res['nearest_res']:.2f}`" if res['nearest_res'] else "无"

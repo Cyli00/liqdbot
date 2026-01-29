@@ -110,6 +110,8 @@ class SymbolState:
     def reset(self):
         """重置状态（标的被重新添加时调用）"""
         self.swing_levels = []
+        self.sweep_history = []
+        self.sweep_history_keys = set()
         self.last_analysis = {}
         self.last_cisd_ts = None
         self.cisd_origin_alert_strength = OrderedDict()
