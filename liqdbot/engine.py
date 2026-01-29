@@ -116,16 +116,23 @@ class StrategyEngine:
         mapping = {"s": "s", "m": "min", "h": "h", "d": "D", "w": "W"}
         return f"{value}{mapping.get(unit, 'h')}"
 
+    @staticmethod
+    def _to_utc_ts(ts):
+        if ts is None or pd.isna(ts):
+            return None
+        ts = pd.Timestamp(ts)
+        if ts.tzinfo is None:
+            return ts.tz_localize('UTC')
+        return ts.tz_convert('UTC')
+
     def _get_last_closed_idx(self, df) -> int | None:
         """判断最后一根K线是否已收盘，返回最近已收盘K线索引"""
         if df is None or df.empty:
             return None
         last_idx = len(df) - 1
-        last_ts = pd.Timestamp(df['timestamp'].iloc[last_idx])
-        if last_ts.tzinfo is None:
-            last_ts = last_ts.tz_localize('UTC')
-        else:
-            last_ts = last_ts.tz_convert('UTC')
+        last_ts = self._to_utc_ts(df['timestamp'].iloc[last_idx])
+        if last_ts is None:
+            return None
         tf_minutes = self._timeframe_to_minutes(TIMEFRAME)
         close_time = last_ts + pd.Timedelta(minutes=tf_minutes)
         now = pd.Timestamp.now(tz='UTC')
@@ -136,11 +143,17 @@ class StrategyEngine:
     @staticmethod
     def _ohlcv_to_df(ohlcv):
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms', utc=True)
         return df.reset_index(drop=True)
 
     @staticmethod
     def _merge_frames(cached_df, new_df, max_size: int | None):
+        if cached_df is not None and not cached_df.empty and 'timestamp' in cached_df.columns:
+            cached_df = cached_df.copy()
+            cached_df['timestamp'] = pd.to_datetime(cached_df['timestamp'], utc=True, errors='coerce')
+        if new_df is not None and not new_df.empty and 'timestamp' in new_df.columns:
+            new_df = new_df.copy()
+            new_df['timestamp'] = pd.to_datetime(new_df['timestamp'], utc=True, errors='coerce')
         if cached_df is None or cached_df.empty:
             merged = new_df.copy()
         else:
@@ -610,6 +623,31 @@ class StrategyEngine:
         candidates.sort(key=lambda x: x[1], reverse=True)
         return candidates[0][0], candidates[0][2]
 
+    def _find_recent_sweep_level(self, state: SymbolState, current_price: float, level_type: str, direction: str):
+        """
+        查找最近的流动性扫荡点（按 mitigated_at 最近）
+        direction: 'above'（上方阻力）或 'below'（下方支撑）
+        """
+        candidates = []
+        for lvl in state.swing_levels:
+            if lvl['type'] != level_type:
+                continue
+            mitigated_at = lvl.get('mitigated_at')
+            if mitigated_at is None:
+                continue
+            price = lvl['price']
+            if direction == 'above' and price <= current_price:
+                continue
+            if direction == 'below' and price >= current_price:
+                continue
+            candidates.append((mitigated_at, price))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
     def detect_cisd(self, df):
         """
         检测 CISD 信号
@@ -818,13 +856,13 @@ class StrategyEngine:
         slope_valid = False
         
         atr_1h = last_1h.get('ATR_14')
-        last_open_ts = last_1h.get('timestamp')
+        last_open_ts = self._to_utc_ts(last_1h.get('timestamp'))
         if (atr_1h is not None and not pd.isna(atr_1h) and atr_1h != 0 and
-                last_open_ts is not None and not pd.isna(last_open_ts) and
+                last_open_ts is not None and
                 not pd.isna(mac_1h) and not pd.isna(prev_mac_1h)):
             bar_minutes = self._timeframe_to_minutes(TIMEFRAME)
             bar_seconds = max(bar_minutes * 60, 1)
-            now_ts = pd.Timestamp.utcnow()
+            now_ts = pd.Timestamp.now(tz='UTC')
             x2_ts = last_open_ts
             bar_close_ts = x2_ts + pd.Timedelta(seconds=bar_seconds)
             x1_ts = now_ts
@@ -889,9 +927,11 @@ class StrategyEngine:
             htf_df, 'MACD', 'Signal'
         )
         
-        if (cross_1h_time is not None and cross_4h_time is not None and
+        cross_1h_time_utc = self._to_utc_ts(cross_1h_time)
+        cross_4h_time_utc = self._to_utc_ts(cross_4h_time)
+        if (cross_1h_time_utc is not None and cross_4h_time_utc is not None and
                 cross_1h_is_golden == cross_4h_is_golden == is_golden):
-            time_diff = abs((cross_1h_time - cross_4h_time).total_seconds())
+            time_diff = abs((cross_1h_time_utc - cross_4h_time_utc).total_seconds())
             cross_time_gap_hours = time_diff / 3600
             max_gap_hours = self._timeframe_to_minutes(self.htf_timeframe) / 60.0
             if cross_time_gap_hours > max_gap_hours:
@@ -1138,16 +1178,9 @@ class StrategyEngine:
                 # 更新已检测的15分钟K线时间戳
                 state.last_macd_check_15m_ts = current_15m_ts
 
-        # --- 4. 计算当前最近的支撑/阻力 ---
-        if self.hide_mitigated_levels:
-            active_highs = [x['price'] for x in state.swing_levels if not x['mitigated'] and x['type'] == 'high']
-            active_lows = [x['price'] for x in state.swing_levels if not x['mitigated'] and x['type'] == 'low']
-        else:
-            active_highs = [x['price'] for x in state.swing_levels if x['type'] == 'high']
-            active_lows = [x['price'] for x in state.swing_levels if x['type'] == 'low']
-        
-        nearest_res = min([x for x in active_highs if x > current_price], default=None)
-        nearest_sup = max([x for x in active_lows if x < current_price], default=None)
+        # --- 4. 计算当前最近的支撑/阻力（使用最近的流动性扫荡点） ---
+        nearest_res = self._find_recent_sweep_level(state, current_price, 'high', 'above')
+        nearest_sup = self._find_recent_sweep_level(state, current_price, 'low', 'below')
 
         result = {
             'symbol': symbol,
