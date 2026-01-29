@@ -9,14 +9,14 @@ LiqdBot 是一个加密货币流动性监控 Telegram 机器人：定时从交�
   - 普通 / 强 CISD（带扫单确认）
 - MACD 1h/4h 共振提醒
 - Alert 冷却与去重
-- **CISD & MACD Alert** 自动附带 BTC 现货溢价
+- **所有 Alert** 自动附带 BTC 现货溢价
 
 ## 现货溢价
 公式：
 ```
 (Coinbase BTC/USD - Avg(Binance BTC/USDT, OKX BTC/USDT)) / Coinbase BTC/USD
 ```
-仅在 **CISD** 与 **MACD** 提醒中追加显示。
+在所有 Alert 中追加显示。
 
 ## 运行环境
 - Python **>= 3.12**（见 `uv.lock`）

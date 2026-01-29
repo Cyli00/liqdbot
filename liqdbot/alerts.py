@@ -85,15 +85,7 @@ class AlertMessages:
     TYPE_MACD_RESONANCE_GOLDEN = "macd_resonance_golden"
     TYPE_MACD_RESONANCE_DEATH = "macd_resonance_death"
 
-    # 需要附带现货溢价的 Alert 类型
-    PREMIUM_ELIGIBLE_TYPES = {
-        TYPE_BEARISH_NORMAL_CISD,
-        TYPE_BULLISH_NORMAL_CISD,
-        TYPE_BEARISH_STRONG_CISD,
-        TYPE_BULLISH_STRONG_CISD,
-        TYPE_MACD_RESONANCE_GOLDEN,
-        TYPE_MACD_RESONANCE_DEATH,
-    }
+    # 现货溢价应用于所有 Alert
 
     @staticmethod
     def format_spot_premium_line(premium) -> str:

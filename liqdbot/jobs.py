@@ -164,17 +164,11 @@ async def check_market_job(context: ContextTypes.DEFAULT_TYPE):
     
     # 3. 顺序发送所有alerts
     premium = None
-    needs_premium = any(
-        alert_type in AlertMessages.PREMIUM_ELIGIBLE_TYPES
-        for _, alert_type, _ in all_alerts
-    )
-    if needs_premium:
+    if all_alerts:
         premium = await fetch_spot_premium()
 
     for state, alert_type, alert_msg in all_alerts:
-        final_msg = alert_msg.rstrip()
-        if alert_type in AlertMessages.PREMIUM_ELIGIBLE_TYPES:
-            final_msg = AlertMessages.append_spot_premium(final_msg, premium)
+        final_msg = AlertMessages.append_spot_premium(alert_msg, premium)
         success = await send_telegram_with_retry(context.bot, TG_CHAT_ID, final_msg)
         if success:
             state.mark_alert_sent(alert_type)
