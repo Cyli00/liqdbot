@@ -23,14 +23,13 @@ LiqdBot 是一个加密货币流动性监控 Telegram 机器人：定时从交�
 - 需要可访问 Binance / OKX / Coinbase
 - Telegram Bot Token 与 Chat ID
 
-## 安装
+## 安装（使用 uv）
 ```bash
-python -m venv .venv
+uv venv .venv
 source .venv/bin/activate
-pip install -U pip
-pip install ccxt pandas pandas_ta numpy python-telegram-bot python-dotenv
+uv pip sync uv.lock
 ```
-> 依赖版本锁定可参考 `uv.lock`。
+> 若需要临时补依赖：`uv pip install ccxt pandas pandas_ta numpy python-telegram-bot python-dotenv`
 
 ## 配置
 在项目根目录创建 `.env`：
@@ -47,9 +46,9 @@ TG_CHAT_ID=你的频道/群组ID（数字）
 
 ## 运行
 ```bash
-python main.py
+uv run python main.py
 # 或
-python -m liqdbot.main
+uv run python -m liqdbot.main
 ```
 
 ## Telegram 命令

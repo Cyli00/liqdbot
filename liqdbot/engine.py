@@ -638,6 +638,42 @@ class StrategyEngine:
         candidates.sort(key=lambda x: x[1], reverse=True)
         return candidates[0][0], candidates[0][2]
 
+    def _find_recent_sweep_by_range(self, df, last_idx: int, level_type: str):
+        """
+        在最近 liquidity_lookback 根K线内，基于区间高低点判断是否出现快速扫荡
+        目的：避免严格 pivot 确认导致 Strong CISD 延迟
+        
+        规则（简化版）：
+        - 扫上方流动性：某根K线 high 突破其前 pivot_len 根的最高价，且收盘回落到该区间内
+        - 扫下方流动性：某根K线 low 跌破其前 pivot_len 根的最低价，且收盘回升到该区间内
+        
+        Returns:
+            (bars_since, level_price) 或 (None, None)
+        """
+        if df is None or df.empty or last_idx <= 0:
+            return None, None
+
+        high_vals = df['high'].to_numpy()
+        low_vals = df['low'].to_numpy()
+        close_vals = df['close'].to_numpy()
+
+        start = max(0, last_idx - self.liquidity_lookback)
+        for j in range(last_idx, start - 1, -1):
+            prev_start = max(0, j - self.pivot_len)
+            if prev_start >= j:
+                continue
+
+            if level_type == 'high':
+                prev_high = high_vals[prev_start:j].max()
+                if high_vals[j] > prev_high and close_vals[j] < prev_high:
+                    return last_idx - j, prev_high
+            else:
+                prev_low = low_vals[prev_start:j].min()
+                if low_vals[j] < prev_low and close_vals[j] > prev_low:
+                    return last_idx - j, prev_low
+
+        return None, None
+
     def _find_recent_sweep_level(self, state: SymbolState, current_price: float, level_type: str, direction: str):
         """
         查找最近的流动性扫荡点（按 mitigated_at 最近）
@@ -1196,6 +1232,12 @@ class StrategyEngine:
         # 使用辅助方法在 liquidity_lookback 窗口内查找最近被扫荡的 swing level
         bars_since_high, wicked_high_level = self._find_recent_wicked_level(state, last_idx, 'high')
         bars_since_low, wicked_low_level = self._find_recent_wicked_level(state, last_idx, 'low')
+
+        # 若 pivot 扫荡未确认，退化到快速区间扫荡检测，避免 Strong CISD 延迟
+        if bars_since_high is None:
+            bars_since_high, wicked_high_level = self._find_recent_sweep_by_range(df, last_idx, 'high')
+        if bars_since_low is None:
+            bars_since_low, wicked_low_level = self._find_recent_sweep_by_range(df, last_idx, 'low')
 
         if cisd_result['flag_at_last'] != 0:
             # 只有当当前信号的时间戳晚于上一次记录的时间戳时才处理
