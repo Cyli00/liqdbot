@@ -13,7 +13,8 @@ from .config import (
     DEFAULT_SYMBOL, TIMEFRAME, LOWER_TIMEFRAME, FETCH_LIMIT,
     PIVOT_LEN, EXPIRY_BARS,
     LIQUIDITY_LOOKBACK, HIDE_EXPIRED_LEVELS, HIDE_MITIGATED_LEVELS,
-    CISD_TOLERANCE, CISD_DEDUP_ENABLED
+    CISD_TOLERANCE, CISD_DEDUP_ENABLED,
+    CISD_NORMAL_REQUIRE_CLOSE, CISD_STRONG_REQUIRE_CLOSE
 )
 from .state import SymbolState
 from .alerts import AlertMessages
@@ -1162,13 +1163,36 @@ class StrategyEngine:
 
         last_candle = df.iloc[-1]
         current_price = last_candle['close']
-        current_ts = last_candle['timestamp']
 
         # 更新 Pivot 数据库
         last_closed_idx = self._get_last_closed_idx(df)
         self.update_swing_levels(df, state, last_closed_idx=last_closed_idx)
 
-        cisd_result = self.detect_cisd(df)
+        # CISD 同时计算实时与收盘版本：
+        # - 实时版本用于强 CISD（默认不要求收盘确认，贴近 TradingView 参考脚本）
+        # - 收盘版本用于普通 CISD（默认要求收盘确认，降低噪音）
+        empty_cisd_result = {
+            'flag_series': [],
+            'flag_at_last': 0,
+            'origin_level_at_last': None,
+            'origin_idx_at_last': None,
+        }
+
+        cisd_live_result = self.detect_cisd(df)
+        cisd_live_signal_idx = last_idx
+        cisd_live_signal_price = current_price
+        cisd_live_signal_ts = df['timestamp'].iloc[last_idx]
+
+        cisd_closed_result = empty_cisd_result
+        cisd_closed_signal_idx = None
+        cisd_closed_signal_price = current_price
+        cisd_closed_signal_ts = None
+        if last_closed_idx is not None and last_closed_idx >= 1:
+            cisd_df = df.iloc[:last_closed_idx + 1]
+            cisd_closed_result = self.detect_cisd(cisd_df)
+            cisd_closed_signal_idx = last_closed_idx
+            cisd_closed_signal_price = cisd_df['close'].iloc[-1]
+            cisd_closed_signal_ts = cisd_df['timestamp'].iloc[-1]
 
         msgs = []
 
@@ -1193,52 +1217,125 @@ class StrategyEngine:
                     state.notified_sweeps.add(key)
 
         # --- 2. CISD 策略: Normal/Strong CISD Alerts ---
-        # 使用辅助方法在 liquidity_lookback 窗口内查找最近被扫荡的 swing level
-        bars_since_high, wicked_high_level = self._find_recent_wicked_level(state, last_idx, 'high')
-        bars_since_low, wicked_low_level = self._find_recent_wicked_level(state, last_idx, 'low')
+        def build_cisd_candidate(cisd_result, signal_idx, signal_price, signal_ts):
+            """构建 CISD 候选信号（可能是 normal 或 strong）"""
+            if cisd_result['flag_at_last'] == 0 or signal_ts is None or signal_idx is None:
+                return None
 
-        if cisd_result['flag_at_last'] != 0:
-            # 只有当当前信号的时间戳晚于上一次记录的时间戳时才处理
-            # cisd_result['flag_at_last'] 对应的是 last_idx 的信号，即 current_ts
-            if state.last_cisd_ts is None or current_ts > state.last_cisd_ts:
-                origin_level = cisd_result['origin_level_at_last']
-                if origin_level is None or (isinstance(origin_level, float) and math.isnan(origin_level)):
-                    state.last_cisd_ts = current_ts
+            origin_level = cisd_result['origin_level_at_last']
+            if origin_level is None or (isinstance(origin_level, float) and math.isnan(origin_level)):
+                return {
+                    'signal_ts': signal_ts,
+                    'signal_idx': signal_idx,
+                    'flag': cisd_result['flag_at_last'],
+                    'origin_level': origin_level,
+                    'alert_type': None,
+                    'alert_msg': None,
+                    'is_strong': False,
+                }
+
+            bars_since_high, wicked_high_level = self._find_recent_wicked_level(state, signal_idx, 'high')
+            bars_since_low, wicked_low_level = self._find_recent_wicked_level(state, signal_idx, 'low')
+
+            if cisd_result['flag_at_last'] == 1:
+                # 看跌 CISD：检查是否有高点扫荡且价格低于被扫荡水平
+                if (bars_since_high is not None and
+                    wicked_high_level is not None and
+                    signal_price < wicked_high_level):
+                    alert_type = AlertMessages.TYPE_BEARISH_STRONG_CISD
+                    alert_msg = AlertMessages.bearish_strong_cisd(
+                        symbol, signal_price, origin_level,
+                        wicked_high_level, bars_since_high
+                    )
+                    is_strong = True
                 else:
-                    if cisd_result['flag_at_last'] == 1:
-                        # 看跌 CISD：检查是否有高点扫荡且价格低于被扫荡水平
-                        if (bars_since_high is not None and 
-                            wicked_high_level is not None and 
-                            current_price < wicked_high_level):
-                            alert_type = AlertMessages.TYPE_BEARISH_STRONG_CISD
-                            alert_msg = AlertMessages.bearish_strong_cisd(
-                                symbol, current_price, origin_level,
-                                wicked_high_level, bars_since_high
-                            )
-                        else:
-                            alert_type = AlertMessages.TYPE_BEARISH_NORMAL_CISD
-                            alert_msg = AlertMessages.bearish_normal_cisd(symbol, current_price, origin_level)
-                    else:
-                        # 看涨 CISD：检查是否有低点扫荡且价格高于被扫荡水平
-                        if (bars_since_low is not None and 
-                            wicked_low_level is not None and 
-                            current_price > wicked_low_level):
-                            alert_type = AlertMessages.TYPE_BULLISH_STRONG_CISD
-                            alert_msg = AlertMessages.bullish_strong_cisd(
-                                symbol, current_price, origin_level,
-                                wicked_low_level, bars_since_low
-                            )
-                        else:
-                            alert_type = AlertMessages.TYPE_BULLISH_NORMAL_CISD
-                            alert_msg = AlertMessages.bullish_normal_cisd(symbol, current_price, origin_level)
+                    alert_type = AlertMessages.TYPE_BEARISH_NORMAL_CISD
+                    alert_msg = AlertMessages.bearish_normal_cisd(symbol, signal_price, origin_level)
+                    is_strong = False
+            else:
+                # 看涨 CISD：检查是否有低点扫荡且价格高于被扫荡水平
+                if (bars_since_low is not None and
+                    wicked_low_level is not None and
+                    signal_price > wicked_low_level):
+                    alert_type = AlertMessages.TYPE_BULLISH_STRONG_CISD
+                    alert_msg = AlertMessages.bullish_strong_cisd(
+                        symbol, signal_price, origin_level,
+                        wicked_low_level, bars_since_low
+                    )
+                    is_strong = True
+                else:
+                    alert_type = AlertMessages.TYPE_BULLISH_NORMAL_CISD
+                    alert_msg = AlertMessages.bullish_normal_cisd(symbol, signal_price, origin_level)
+                    is_strong = False
 
+            return {
+                'signal_ts': signal_ts,
+                'signal_idx': signal_idx,
+                'flag': cisd_result['flag_at_last'],
+                'origin_level': origin_level,
+                'alert_type': alert_type,
+                'alert_msg': alert_msg,
+                'is_strong': is_strong,
+            }
+
+        cisd_candidates = []
+
+        # 实时候选（可能未收盘）
+        live_candidate = build_cisd_candidate(
+            cisd_live_result,
+            cisd_live_signal_idx,
+            cisd_live_signal_price,
+            cisd_live_signal_ts,
+        )
+        if live_candidate is not None:
+            if live_candidate['alert_type'] is None:
+                # origin 无效时不使用实时信号更新时间戳
+                pass
+            else:
+                require_close = CISD_STRONG_REQUIRE_CLOSE if live_candidate['is_strong'] else CISD_NORMAL_REQUIRE_CLOSE
+                if not require_close:
+                    cisd_candidates.append(('live', live_candidate))
+
+        # 收盘候选（已收盘）
+        closed_candidate = build_cisd_candidate(
+            cisd_closed_result,
+            cisd_closed_signal_idx,
+            cisd_closed_signal_price,
+            cisd_closed_signal_ts,
+        )
+        if closed_candidate is not None:
+            cisd_candidates.append(('closed', closed_candidate))
+
+        if cisd_candidates:
+            # 优先级：强信号 > 新K线 > 实时来源
+            cisd_candidates.sort(
+                key=lambda item: (
+                    1 if item[1]['is_strong'] else 0,
+                    item[1]['signal_idx'] if item[1]['signal_idx'] is not None else -1,
+                    1 if item[0] == 'live' else 0,
+                ),
+                reverse=True,
+            )
+            _, best_candidate = cisd_candidates[0]
+            best_ts = best_candidate['signal_ts']
+
+            if best_ts is not None and (state.last_cisd_ts is None or best_ts > state.last_cisd_ts):
+                alert_type = best_candidate['alert_type']
+                if alert_type is None:
+                    # 仅推进去重时间戳，避免重复处理无效 origin
+                    state.last_cisd_ts = best_ts
+                else:
                     if CISD_DEDUP_ENABLED:
-                        if state.should_send_cisd_origin_alert(cisd_result['flag_at_last'], origin_level, alert_type):
-                            msgs.append((alert_type, alert_msg))
+                        if state.should_send_cisd_origin_alert(
+                            best_candidate['flag'],
+                            best_candidate['origin_level'],
+                            alert_type,
+                        ):
+                            msgs.append((alert_type, best_candidate['alert_msg']))
                     else:
-                        msgs.append((alert_type, alert_msg))
+                        msgs.append((alert_type, best_candidate['alert_msg']))
 
-                    state.last_cisd_ts = current_ts
+                    state.last_cisd_ts = best_ts
 
         # --- 3. MACD 共振策略 ---
         # 仅当 htf_df 可用时检测
