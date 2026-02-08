@@ -44,6 +44,11 @@ HIDE_EXPIRED_LEVELS = True
 HIDE_MITIGATED_LEVELS = False
 CISD_TOLERANCE = 0.7
 CISD_DEDUP_ENABLED = True
+# CISD 是否要求收盘确认
+# - 普通 CISD: 建议收盘确认，降低噪音
+# - 强 CISD: 默认不要求收盘确认（更贴近 TradingView 参考脚本）
+CISD_NORMAL_REQUIRE_CLOSE = True
+CISD_STRONG_REQUIRE_CLOSE = False
 
 # --- 网络配置 ---
 MAX_RETRIES = 3
