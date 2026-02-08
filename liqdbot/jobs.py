@@ -20,10 +20,28 @@ MAX_CONCURRENT_FETCHES = 4
 
 # 现货溢价缓存 (秒)
 SPOT_PREMIUM_CACHE_TTL = 30
+# 若交易所 ticker 的时间戳误差过大，记录告警（不阻断）
+SPOT_PREMIUM_MAX_TS_SKEW_MS = 10_000
 _SPOT_PREMIUM_CACHE = {
     "ts": 0.0,
     "value": None,
+    "meta": None,
 }
+
+
+async def _fetch_ticker_with_recv_ts(exchange, symbol: str):
+    """拉取 ticker，并返回本地接收时间戳(ms)"""
+    ticker = await exchange.fetch_ticker(symbol)
+    recv_ts_ms = int(time.time() * 1000)
+    return ticker, recv_ts_ms
+
+
+def _ticker_ts_ms(ticker: dict, recv_ts_ms: int) -> int:
+    """优先使用交易所时间戳，缺失时退回到本地接收时间戳"""
+    ts = ticker.get("timestamp")
+    if isinstance(ts, (int, float)) and ts > 0:
+        return int(ts)
+    return recv_ts_ms
 
 
 async def send_telegram_with_retry(bot, chat_id: int, text: str, max_retries: int = MAX_RETRIES) -> bool:
@@ -79,11 +97,14 @@ async def fetch_spot_premium(max_age: int = SPOT_PREMIUM_CACHE_TTL):
     okx = ccxt.okx()
 
     try:
-        coinbase_ticker, binance_ticker, okx_ticker = await asyncio.gather(
-            coinbase.fetch_ticker("BTC/USD"),
-            binance.fetch_ticker("BTC/USDT"),
-            okx.fetch_ticker("BTC/USDT")
+        fetch_start = time.time()
+        (coinbase_ticker, coinbase_recv_ts), (binance_ticker, binance_recv_ts), (okx_ticker, okx_recv_ts) = await asyncio.gather(
+            _fetch_ticker_with_recv_ts(coinbase, "BTC/USD"),
+            _fetch_ticker_with_recv_ts(binance, "BTC/USDT"),
+            _fetch_ticker_with_recv_ts(okx, "BTC/USDT")
         )
+        fetch_end = time.time()
+
         coinbase_price = coinbase_ticker.get("last") or coinbase_ticker.get("close")
         binance_price = binance_ticker.get("last") or binance_ticker.get("close")
         okx_price = okx_ticker.get("last") or okx_ticker.get("close")
@@ -96,8 +117,32 @@ async def fetch_spot_premium(max_age: int = SPOT_PREMIUM_CACHE_TTL):
         avg_price = (binance_price + okx_price) / 2
         premium = (coinbase_price - avg_price) / coinbase_price
 
-        _SPOT_PREMIUM_CACHE["ts"] = now
+        coinbase_ts = _ticker_ts_ms(coinbase_ticker, coinbase_recv_ts)
+        binance_ts = _ticker_ts_ms(binance_ticker, binance_recv_ts)
+        okx_ts = _ticker_ts_ms(okx_ticker, okx_recv_ts)
+        ticker_ts_values = [coinbase_ts, binance_ts, okx_ts]
+
+        ts_skew_ms = max(ticker_ts_values) - min(ticker_ts_values)
+        fetched_at_ms = int(fetch_end * 1000)
+        max_staleness_ms = max(fetched_at_ms - ts for ts in ticker_ts_values)
+
+        if ts_skew_ms > SPOT_PREMIUM_MAX_TS_SKEW_MS:
+            logging.warning(
+                "现货溢价 ticker 时间戳误差较大: skew=%sms (coinbase=%s, binance=%s, okx=%s)",
+                ts_skew_ms,
+                coinbase_ts,
+                binance_ts,
+                okx_ts,
+            )
+
+        _SPOT_PREMIUM_CACHE["ts"] = fetch_end
         _SPOT_PREMIUM_CACHE["value"] = premium
+        _SPOT_PREMIUM_CACHE["meta"] = {
+            "fetched_at_ms": fetched_at_ms,
+            "fetch_duration_ms": int((fetch_end - fetch_start) * 1000),
+            "ticker_ts_skew_ms": ts_skew_ms,
+            "max_staleness_ms": max_staleness_ms,
+        }
         return premium
     except Exception as e:
         logging.warning(f"现货溢价获取失败: {e}")
