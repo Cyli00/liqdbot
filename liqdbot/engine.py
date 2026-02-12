@@ -1205,38 +1205,35 @@ class StrategyEngine:
                 if origin_level is None or (isinstance(origin_level, float) and math.isnan(origin_level)):
                     state.last_cisd_ts = current_ts
                 else:
+                    alert_type = None
+                    alert_msg = None
                     if cisd_result['flag_at_last'] == 1:
                         # 看跌 CISD：检查是否有高点扫荡且价格低于被扫荡水平
-                        if (bars_since_high is not None and 
-                            wicked_high_level is not None and 
+                        if (bars_since_high is not None and
+                            wicked_high_level is not None and
                             current_price < wicked_high_level):
                             alert_type = AlertMessages.TYPE_BEARISH_STRONG_CISD
                             alert_msg = AlertMessages.bearish_strong_cisd(
                                 symbol, current_price, origin_level,
                                 wicked_high_level, bars_since_high
                             )
-                        else:
-                            alert_type = AlertMessages.TYPE_BEARISH_NORMAL_CISD
-                            alert_msg = AlertMessages.bearish_normal_cisd(symbol, current_price, origin_level)
                     else:
                         # 看涨 CISD：检查是否有低点扫荡且价格高于被扫荡水平
-                        if (bars_since_low is not None and 
-                            wicked_low_level is not None and 
+                        if (bars_since_low is not None and
+                            wicked_low_level is not None and
                             current_price > wicked_low_level):
                             alert_type = AlertMessages.TYPE_BULLISH_STRONG_CISD
                             alert_msg = AlertMessages.bullish_strong_cisd(
                                 symbol, current_price, origin_level,
                                 wicked_low_level, bars_since_low
                             )
-                        else:
-                            alert_type = AlertMessages.TYPE_BULLISH_NORMAL_CISD
-                            alert_msg = AlertMessages.bullish_normal_cisd(symbol, current_price, origin_level)
 
-                    if CISD_DEDUP_ENABLED:
-                        if state.should_send_cisd_origin_alert(cisd_result['flag_at_last'], origin_level, alert_type):
+                    if alert_type is not None:
+                        if CISD_DEDUP_ENABLED:
+                            if state.should_send_cisd_origin_alert(cisd_result['flag_at_last'], origin_level, alert_type):
+                                msgs.append((alert_type, alert_msg))
+                        else:
                             msgs.append((alert_type, alert_msg))
-                    else:
-                        msgs.append((alert_type, alert_msg))
 
                     state.last_cisd_ts = current_ts
 

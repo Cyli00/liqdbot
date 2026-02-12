@@ -9,8 +9,6 @@ class AlertMessages:
     # Alert 类型常量
     TYPE_SWING_HIGH_MITIGATION = "swing_high_mitigation"
     TYPE_SWING_LOW_MITIGATION = "swing_low_mitigation"
-    TYPE_BEARISH_NORMAL_CISD = "bearish_normal_cisd"
-    TYPE_BULLISH_NORMAL_CISD = "bullish_normal_cisd"
     TYPE_BEARISH_STRONG_CISD = "bearish_strong_cisd"
     TYPE_BULLISH_STRONG_CISD = "bullish_strong_cisd"
     
@@ -33,28 +31,6 @@ class AlertMessages:
             f"📍 标的: `{symbol}`\n"
             f"💰 当前价: `{price:.2f}`\n"
             f"🎯 支撑位: `{level:.2f}`\n"
-        )
-    
-    @staticmethod
-    def bearish_normal_cisd(symbol: str, price: float, origin_level: float) -> str:
-        """Bearish Normal CISD - 普通看跌 CISD 信号"""
-        return (
-            f"🔻 **普通看跌 CISD 信号**\n"
-            f"📍 标的: `{symbol}`\n"
-            f"💰 当前价: `{price:.2f}`\n"
-            f"🎯 起点价位: `{origin_level:.2f}`\n"
-            f"📝 说明: 看跌结构确认，可能继续下跌"
-        )
-    
-    @staticmethod
-    def bullish_normal_cisd(symbol: str, price: float, origin_level: float) -> str:
-        """Bullish Normal CISD - 普通看涨 CISD 信号"""
-        return (
-            f"📈 **普通看涨 CISD 信号**\n"
-            f"📍 标的: `{symbol}`\n"
-            f"💰 当前价: `{price:.2f}`\n"
-            f"🎯 起点价位: `{origin_level:.2f}`\n"
-            f"📝 说明: 看涨结构确认，可能继续上涨"
         )
     
     @staticmethod

@@ -11,8 +11,6 @@ SIGNAL_STRENGTH = {
     # CISD 策略
     "swing_high_mitigation": 1,  # 普通扫单
     "swing_low_mitigation": 1,
-    "bearish_normal_cisd": 2,    # 普通CISD
-    "bullish_normal_cisd": 2,
     "bearish_strong_cisd": 3,    # 强CISD（最强）
     "bullish_strong_cisd": 3,
     
@@ -23,8 +21,8 @@ SIGNAL_STRENGTH = {
 
 # 信号分组（同组内比较强度）
 SIGNAL_GROUPS = {
-    "bullish": ["swing_low_mitigation", "bullish_normal_cisd", "bullish_strong_cisd", "macd_resonance_golden"],
-    "bearish": ["swing_high_mitigation", "bearish_normal_cisd", "bearish_strong_cisd", "macd_resonance_death"],
+    "bullish": ["swing_low_mitigation", "bullish_strong_cisd", "macd_resonance_golden"],
+    "bearish": ["swing_high_mitigation", "bearish_strong_cisd", "macd_resonance_death"],
 }
 
 SIGNAL_GROUP_BY_TYPE = {
@@ -80,7 +78,7 @@ class SymbolState:
         """
         CISD 起点价位去重（同一标的内）：
         - 同方向(flag) + 同起点价位(按消息展示精度round到2位) 只提醒一次
-        - 若后续同 key 触发更强信号（如 normal -> strong），允许升级提醒
+        - 若后续同 key 触发更强信号，允许升级提醒
         - 通过 max_history 限制历史长度，避免无限增长
         """
         try:
