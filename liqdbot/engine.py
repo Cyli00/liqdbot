@@ -147,27 +147,6 @@ class StrategyEngine:
         return df.reset_index(drop=True)
 
     @staticmethod
-    def _merge_frames(cached_df, new_df, max_size: int | None):
-        if cached_df is not None and not cached_df.empty and 'timestamp' in cached_df.columns:
-            cached_df = cached_df.copy()
-            cached_df['timestamp'] = pd.to_datetime(cached_df['timestamp'], utc=True, errors='coerce')
-        if new_df is not None and not new_df.empty and 'timestamp' in new_df.columns:
-            new_df = new_df.copy()
-            new_df['timestamp'] = pd.to_datetime(new_df['timestamp'], utc=True, errors='coerce')
-        if cached_df is None or cached_df.empty:
-            merged = new_df.copy()
-        else:
-            merged = pd.concat([cached_df, new_df], ignore_index=True)
-
-        merged = merged.drop_duplicates(subset='timestamp', keep='last')
-        merged = merged.sort_values('timestamp').reset_index(drop=True)
-
-        if max_size is not None and len(merged) > max_size:
-            merged = merged.tail(max_size).reset_index(drop=True)
-
-        return merged
-
-    @staticmethod
     def _macd_with_sma_signal(series, fast: int = 12, slow: int = 26, signal: int = 9):
         fast_ma = ta.ema(series, length=fast)
         slow_ma = ta.ema(series, length=slow)
@@ -182,60 +161,33 @@ class StrategyEngine:
         hist_series = macd_series - signal_series
         return macd_series, signal_series, hist_series
 
-    async def fetch_data(self, symbol: str, limit: int = FETCH_LIMIT, force_full: bool = False):
+    async def fetch_data(self, symbol: str, limit: int = FETCH_LIMIT):
         """
-        获取指定标的的数据（支持增量更新）
-        
-        增量更新逻辑：
-        1. 首次获取：拉取完整历史数据
-        2. 后续获取：只拉取最新几根K线，合并到缓存
-        3. 定期强制刷新：每小时完整刷新一次，防止数据漂移
-        
+        获取指定标的的数据（每次全量拉取，确保数据一致性）
+
         Args:
             symbol: 交易对
-            limit: 完整获取时的K线数量
-            force_full: 是否强制完整获取
+            limit: K线数量
         """
-        import time as time_module
-        
         if not symbol:
             return None, None, None
-        
+
         state = self.get_state(symbol)
         if state is None:
             return None, None, None
-        
-        now = time_module.time()
-        
-        # 判断是否需要完整获取
-        # 1. 首次获取（无缓存）
-        # 2. 强制刷新
-        # 3. 距离上次完整获取超过1小时
-        need_full_fetch = (
-            force_full or 
-            state.cached_df is None or 
-            (now - state.last_fetch_time) > 3600
-        )
-        
+
         try:
-            if need_full_fetch:
-                # 完整获取
-                df, lower_df, htf_df = await self._fetch_full_data(symbol, limit)
-                if df is not None:
-                    state.cached_df = df
-                    state.cached_lower_df = lower_df
-                    state.cached_htf_df = htf_df
-                    state.last_fetch_time = now
-                    logging.debug(f"[{symbol}] 完整获取 {len(df)} 根K线")
-                return df, lower_df, htf_df
-            else:
-                # 增量获取
-                df, lower_df, htf_df = await self._fetch_incremental_data(symbol, state)
-                return df, lower_df, htf_df
-                
+            df, lower_df, htf_df = await self._fetch_full_data(symbol, limit)
+            if df is not None:
+                state.cached_df = df
+                state.cached_lower_df = lower_df
+                state.cached_htf_df = htf_df
+                logging.debug(f"[{symbol}] 全量获取 {len(df)} 根K线")
+            return df, lower_df, htf_df
+
         except Exception as e:
             logging.error(f"Error fetching data for {symbol}: {e}")
-            # 如果增量获取失败，尝试返回缓存数据
+            # 获取失败时返回上次成功的缓存数据
             if state.cached_df is not None:
                 logging.warning(f"[{symbol}] 使用缓存数据")
                 return state.cached_df, state.cached_lower_df, state.cached_htf_df
@@ -266,60 +218,6 @@ class StrategyEngine:
         htf_df = self._ohlcv_to_df(htf)
 
         return df, lower_df, htf_df
-    
-    async def _fetch_incremental_data(self, symbol: str, state):
-        """
-        增量获取最新数据并合并到缓存
-        
-        策略：
-        1. 只获取最新10根K线（覆盖可能的数据更新）
-        2. 根据timestamp去重合并
-        3. 保持滚动窗口大小
-        """
-        INCREMENTAL_LIMIT = 10  # 增量获取的K线数量
-        MAX_CACHE_SIZE = FETCH_LIMIT  # 缓存最大K线数量
-        
-        # 获取最新的主周期数据
-        ohlcv = await self.exchange.fetch_ohlcv(symbol, TIMEFRAME, limit=INCREMENTAL_LIMIT)
-        new_df = self._ohlcv_to_df(ohlcv)
-        
-        # 合并到缓存（基于timestamp去重，保留最新数据）
-        merged_df = self._merge_frames(state.cached_df, new_df, MAX_CACHE_SIZE)
-        
-        # 获取最新的低周期数据
-        lower_minutes = self._timeframe_to_minutes(self.lower_timeframe)
-        main_minutes = self._timeframe_to_minutes(TIMEFRAME)
-        ratio = max(1, math.ceil(main_minutes / lower_minutes))
-        lower_incremental_limit = INCREMENTAL_LIMIT * ratio + 10
-        
-        lower = await self.exchange.fetch_ohlcv(symbol, self.lower_timeframe, limit=lower_incremental_limit)
-        new_lower_df = self._ohlcv_to_df(lower)
-        
-        # 合并低周期数据
-        max_lower_size = MAX_CACHE_SIZE * ratio + 50
-        merged_lower_df = self._merge_frames(state.cached_lower_df, new_lower_df, max_lower_size)
-            
-        # 获取最新的高周期数据 (HTF)
-        # 优化: 4h K线更新慢，只有距离上次 HTF 更新超过 30 分钟才拉取
-        import time as time_mod
-        htf_update_interval = 1800  # 30 分钟
-        merged_htf_df = state.cached_htf_df
-        
-        if (state.last_htf_fetch_time is None or 
-            (time_mod.time() - state.last_htf_fetch_time) > htf_update_interval):
-            htf = await self.exchange.fetch_ohlcv(symbol, self.htf_timeframe, limit=5)
-            new_htf_df = self._ohlcv_to_df(htf)
-            merged_htf_df = self._merge_frames(state.cached_htf_df, new_htf_df, 200)
-            state.last_htf_fetch_time = time_mod.time()
-        
-        # 更新缓存
-        state.cached_df = merged_df
-        state.cached_lower_df = merged_lower_df
-        state.cached_htf_df = merged_htf_df
-        
-        logging.debug(f"[{symbol}] 增量更新: 主周期 {len(merged_df)}, 低周期 {len(merged_lower_df)}, 高周期 {len(merged_htf_df)}")
-        
-        return merged_df, merged_lower_df, merged_htf_df
 
     def calculate_indicators(self, df, lower_df=None):
         """计算所有技术指标"""
@@ -555,7 +453,7 @@ class StrategyEngine:
                 active_levels.append(level)
 
         if len(state.sweep_history) > 300:
-            state.sweep_history.sort(key=lambda x: x.get('mitigated_at', -1), reverse=True)
+            state.sweep_history.sort(key=lambda x: (x.get('mitigated_at_ts') is not None, x.get('mitigated_at_ts')), reverse=True)
             state.sweep_history = state.sweep_history[:300]
             state.sweep_history_keys = {
                 (x['type'], round(float(x['price']), 4), x.get('mitigated_at_ts'))
@@ -657,12 +555,13 @@ class StrategyEngine:
                 continue
             if direction == 'below' and price >= current_price:
                 continue
-            candidates.append((lvl.get('mitigated_at', -1), price))
+            ts = lvl.get('mitigated_at_ts')
+            candidates.append((ts, price))
 
         if not candidates:
             return None
 
-        candidates.sort(key=lambda x: x[0], reverse=True)
+        candidates.sort(key=lambda x: (x[0] is not None, x[0]), reverse=True)
         return candidates[0][1]
 
     def build_sweep_history_from_df(self, df):
@@ -751,7 +650,7 @@ class StrategyEngine:
                             })
                             break
 
-        sweep_history.sort(key=lambda x: x.get('mitigated_at', -1), reverse=True)
+        sweep_history.sort(key=lambda x: (x.get('mitigated_at_ts') is not None, x.get('mitigated_at_ts')), reverse=True)
         return sweep_history
 
     def detect_cisd(self, df):
