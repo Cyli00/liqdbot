@@ -11,6 +11,7 @@ class AlertMessages:
     TYPE_SWING_LOW_MITIGATION = "swing_low_mitigation"
     TYPE_BEARISH_STRONG_CISD = "bearish_strong_cisd"
     TYPE_BULLISH_STRONG_CISD = "bullish_strong_cisd"
+    TYPE_CISD_INVALIDATED = "cisd_invalidated"
     
     # ==================== CISD 策略 ====================
     @staticmethod
@@ -55,6 +56,19 @@ class AlertMessages:
             f"🎯 起点价位: `{origin_level:.2f}`\n"
             f"💥 扫单价位: `{sweep_level:.2f}` ({bars_since} 根K线内)\n"
             f"📝 说明: 扫除下方流动性后反转上涨，高概率做多信号"
+        )
+    
+    @staticmethod
+    def cisd_invalidated(symbol: str, alert_type: str, price: float, original_price: float) -> str:
+        """CISD Invalidated - 盘中发出的CISD信号在收盘时由于价格回撤而不成立"""
+        signal_name = "强看跌 CISD" if "bearish" in alert_type else "强看涨 CISD"
+        return (
+            f"⚠️ **盘中 CISD 信号失效 (收盘回撤)** \n"
+            f"📍 标的: `{symbol}`\n"
+            f"💰 当前收盘价: `{price:.2f}`\n"
+            f"此前在价格 `{original_price:.2f}` 提示的 **{signal_name}** 信号，\n"
+            f"由于 1 小时收盘前价格回撤，当前信号已不成立！\n"
+            f"🛑 **请立即重新评估仓位，注意止损！**"
         )
     
     # ==================== MACD 共振策略 ====================

@@ -17,6 +17,9 @@ SIGNAL_STRENGTH = {
     # MACD 共振策略
     "macd_resonance_golden": 3,
     "macd_resonance_death": 3,
+    
+    # 止损撤销
+    "cisd_invalidated": 5, # 最高优先级
 }
 
 # 信号分组（同组内比较强度）
@@ -112,6 +115,7 @@ class SymbolState:
         self.sweep_history_keys = set()
         self.last_analysis = {}
         self.last_cisd_ts = None
+        self.active_intra_bar_cisd = None  # 记录盘中发出的 CISD 信号
         self.cisd_origin_alert_strength = OrderedDict()
         self.notified_sweeps = set()
         self.alert_sent_times = {}
